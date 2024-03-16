@@ -24,6 +24,8 @@ main :: proc() {
     rl.InitWindow(WindowWidth, WindowHeight, "live reaction")
     rl.SetTargetFPS(60)
 
+    thig : u32 = 0
+
     for !rl.WindowShouldClose() {
         delta := rl.GetFrameTime()
 
