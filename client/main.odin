@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import rl "vendor:raylib"
+import "soln:viz"
 
 WindowWidth :: 1280
 WindowHeight :: 720
