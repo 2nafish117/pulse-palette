@@ -1,12 +1,18 @@
 package main
 
-import "core:fmt"
-import ma "vendor:miniaudio"
-import "core:c"
-import "core:c/libc"
-import "soln:viz"
 import "base:runtime"
-import "core:container/queue"
+import "core:fmt"
+import "core:c"
+import "core:log"
+import "core:mem"
+
+import ma "vendor:miniaudio"
+import rl "vendor:raylib"
+
+import "soln:viz"
+
+// see docs
+// https://raw.githubusercontent.com/mackron/miniaudio/master/miniaudio.h
 
 thing : bool = false
 data_callback :: proc "c" (pDevice : ^ma.device, pOutput : rawptr, pInput : rawptr, frameCount : u32) {
@@ -41,13 +47,13 @@ UserData :: struct {
 ServerConfig :: struct {
     channels: u32,
     sample_rate: u32,
-    frame_group_sample_count: u32,
+	group_duration: f32,
 }
 
 DEFAULT_SERVER_CONFIG :: ServerConfig{
-    channels=2, 
-    sample_rate=u32(ma.standard_sample_rate.rate_44100),
-    group_frame_count=4410,
+    channels = 2, 
+    sample_rate = u32(ma.standard_sample_rate.rate_44100),
+	group_duration = 0.01,
 }
 
 main :: proc() {
@@ -59,7 +65,7 @@ main :: proc() {
     
     sample_data : UserData
     res := ma.pcm_rb_init(ma.format.f32, cfg.channels, BACKING_RINGBUFFER_FRAMES, raw_data(backing_allocation), nil, &sample_data.samples_buffer)
-    assert(res == ma.result.SUCCESS, "pcm ringbuffer couldnt be created")
+    assert(res == ma.result.SUCCESS, "pcm ringbuffer couldn't be created")
     defer ma.pcm_rb_uninit(&sample_data.samples_buffer)
 
     device_config := ma.device_config_init(ma.device_type.loopback)
@@ -73,6 +79,7 @@ main :: proc() {
     if ma.device_init(nil, &device_config, &device) != ma.result.SUCCESS {
         panic("failed to initialise capture device")
     }
+	defer ma.device_uninit(&device)
 
     if ma.device_start(&device) != ma.result.SUCCESS {
         ma.device_uninit(&device)
@@ -82,45 +89,53 @@ main :: proc() {
     fmt.println("we starting")
 
     frame_group_id := u64(0)
-    running := true
     
-    for running {
-        num_frames_per_group: u32 = 4410
-        // num_frames: u32 = u32(f32(device_config.sampleRate) * 0.01)
+	rl.InitWindow(1280, 720, "live reaction")
+    rl.SetTargetFPS(60)
 
-        buffer_out: rawptr
-        result := ma.pcm_rb_acquire_read(&sample_data.samples_buffer, &num_frames_per_group, &buffer_out)
+    for !rl.WindowShouldClose() {
+        delta := rl.GetFrameTime()
 
-        if result == ma.result.SUCCESS {
-            
-            result_commit_read := ma.pcm_rb_commit_read(&sample_data.samples_buffer, num_frames_per_group, &buffer_out)    
-        }
+		copied_data: []f32
 
+		// num_frames_per_group: u32 = 4410
+		num_frames_per_group: u32 = u32(f32(cfg.sample_rate) * cfg.group_duration)
 
-        result_commit_read := ma.pcm_rb_commit_read(&sample_data.samples_buffer, num_frames_per_group, &buffer_out)
+		buffer_out: rawptr
+		result := ma.pcm_rb_acquire_read(&sample_data.samples_buffer, &num_frames_per_group, &buffer_out)
 
-        if result == ma.result.SUCCESS {
-            #partial switch result_commit_read {
-            case ma.result.SUCCESS:
-                fmt.printf("frame_group_id: %d num_frames_per_group: %d\n", frame_group_id, num_frames_per_group)
-                buffer_out_typed := transmute([^]f32)buffer_out
+		if result == ma.result.SUCCESS {
+			
+			copied_data = make([]f32, num_frames_per_group, context.temp_allocator)
 
-                for i := u32(0); i < cfg.channels * num_frames_per_group; i += cfg.channels {
-                    
-                    // reading only first channel
-                    data := buffer_out_typed[i]
-                    fmt.printf("data: %f \n", data)
-                }
-                frame_group_id += 1
-                case ma.result.AT_END:
-                    fmt.println("end of buffer")
-                case:
-                    fmt.println("hmm wtf happened? %d", result_commit_read)
-                }
-        }
+			fmt.printf("frame_group_id: %d num_frames_per_group: %d\n", frame_group_id, num_frames_per_group)
+			buffer_out_typed := transmute([^]f32)buffer_out
+
+			mem.copy_non_overlapping(raw_data(copied_data), buffer_out_typed, len(copied_data) * size_of(f32))
+			
+			// for i := u32(0); i < cfg.channels * num_frames_per_group; i += cfg.channels {
+				
+			// 	// reading only first channel
+			// 	data := buffer_out_typed[i]
+			// 	// fmt.printf("data: %f \n", data)
+			// }
+			frame_group_id += 1
+
+			result_commit_read := ma.pcm_rb_commit_read(&sample_data.samples_buffer, num_frames_per_group, &buffer_out)
+		}
+
+        rl.ClearBackground({0, 0, 0, 255})
+        rl.BeginDrawing()
+
+		// draw
+		for sample, i in copied_data {
+			rl.DrawRectangle(i32(5 * i), 100, 5, i32(sample * 1000), rl.RED)
+		}
+
+        rl.EndDrawing()
+
+		free_all(context.temp_allocator)
     }
 
-    fmt.println("we ending")
-
-    ma.device_uninit(&device)
+    rl.CloseWindow()    
 }
