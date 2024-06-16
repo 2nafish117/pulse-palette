@@ -9,8 +9,6 @@ import "core:mem"
 import ma "vendor:miniaudio"
 import rl "vendor:raylib"
 
-import "soln:viz"
-
 // see docs
 // https://raw.githubusercontent.com/mackron/miniaudio/master/miniaudio.h
 
