@@ -1,6 +1,7 @@
 @echo off
 
 echo "Building Server..."
+mkdir bin
 odin build server/ -out:bin/server.exe -debug -collection:soln=.
 echo "Done Building Server..."
 

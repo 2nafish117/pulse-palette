@@ -28,10 +28,10 @@ fft :: proc(data: []f32, out: []complex64) {
     fft_internal(data, out, len(data), 1)
 }
 
-@(private="file")
-test_fft :: proc() {
+// @(private="file")
+main :: proc() {
     
-    x := []f32{1, 1, 1, 1, 0, 0, 0, 0}
+    x := []f32{1, 1, 0, 1, 1, 0, 1, 1}
     y := make([]complex64, len(x))
 
     fft(x, y)

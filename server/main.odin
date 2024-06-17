@@ -54,7 +54,7 @@ DEFAULT_SERVER_CONFIG :: ServerConfig{
 	group_duration = 0.01,
 }
 
-main :: proc() {
+main_ :: proc() {
     cfg := DEFAULT_SERVER_CONFIG
 
     BACKING_RINGBUFFER_FRAMES :: 1024 * 8
