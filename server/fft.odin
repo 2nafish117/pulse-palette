@@ -3,40 +3,108 @@ package main
 import "core:fmt"
 import "core:math"
 import "core:math/cmplx"
+import "base:intrinsics"
 
 @(private="file")
-fft_internal :: proc(data: []f32, out: []complex64, n, s: int) {
-    if n == 1 {
-        out[0] = complex(data[0], 0)
-        return
-    }
+int_log2 :: proc "contextless" (x: int) -> u32 {
+	x := x
+	
+	res: u32 = 0
+	for x != 0 {
+		x = x >> 1
+		res += 1
+	}
 
-    fft_internal(data, out, n/2, 2*s)
-    fft_internal(data[s:], out[n/2:], n/2, 2*s)
-    
-    for k in 0..<n/2 {
-        theta := -2 * math.PI * f32(k) / f32(n)
-        tf := cmplx.rect_complex64(1, theta) * out[k + n/2]
-        out[k], out[k + n/2] = out[k] + tf, out[k] - tf
-    }
+	return res - 1
 }
 
-fft :: proc(data: []f32, out: []complex64) {
-    assert(len(data) == len(out))
-    assert(math.is_power_of_two(len(data)))
+// ported to odin from rosetta code
+// Cooley-Tukey FFT (in-place, breadth-first, decimation-in-frequency)
+fft :: proc(x: []complex64) {
+	assert(math.is_power_of_two(len(x)))
 
-    fft_internal(data, out, len(data), 1)
+	// DFT
+	N: int = len(x)
+	k: int = N
+
+	theta := math.PI / f32(N)
+
+	s, c := math.sincos(theta)
+	// @TODO: cache this?
+	phi: complex64 = complex(c, -s)
+
+	for k > 1 {
+		n: int = k
+		k >>= 1
+		phi = phi * phi
+		T: complex64 = 1.0
+		for l: int = 0; l < k; l += 1 {
+			for a: int = l; a < N; a += n {
+				b: int = a + k
+				t: complex64 = x[a] - x[b]
+				x[a] += x[b]
+				x[b] = t * T
+			}
+			T = T * phi
+		}
+	}
+
+	// Decimate
+	// @TODO bit stuff here
+
+	m: u32 = int_log2(N)
+	for a: u32 = 0; a < u32(N); a += 1 {
+		b: u32 = a
+		// Reverse bits
+		b = (((b & 0xaaaaaaaa) >> 1) | ((b & 0x55555555) << 1))
+		b = (((b & 0xcccccccc) >> 2) | ((b & 0x33333333) << 2))
+		b = (((b & 0xf0f0f0f0) >> 4) | ((b & 0x0f0f0f0f) << 4))
+		b = (((b & 0xff00ff00) >> 8) | ((b & 0x00ff00ff) << 8))
+		b = ((b >> 16) | (b << 16)) >> (32 - m)
+		if (b > a)
+		{
+			t: complex64 = x[a]
+			x[a] = x[b]
+			x[b] = t
+		}
+	}
 }
 
-// @(private="file")
-main :: proc() {
-    
-    x := []f32{1, 1, 0, 1, 1, 0, 1, 1}
-    y := make([]complex64, len(x))
+// inverse fft (in-place)
+ifft :: proc(x: []complex64) {
+	assert(math.is_power_of_two(len(x)))
 
-    fft(x, y)
-    
-    for v, c in y {
-        fmt.printf("%f\n", v)
-    }
+	// conjugate the complex numbers
+	for &i in x {
+		i = conj(i)
+	}
+
+	// forward fft
+	fft(x)
+
+	// conjugate the complex numbers again
+	for &i in x {
+		i = conj(i)
+	}
+
+	// scale the numbers
+	for &i in x {
+		i = i * complex(1.0 / f32(len(x)), 0)
+	}
+}
+
+@(private)
+test_fft :: proc()
+{
+	data: []complex64 = { 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0 }
+
+	// forward fft
+	fft(data)
+
+	fmt.printfln("fft: %v", data)
+
+	// inverse fft
+	ifft(data)
+
+	fmt.printfln("ifft: %v", data)
 }
