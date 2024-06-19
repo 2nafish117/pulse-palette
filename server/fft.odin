@@ -1,9 +1,11 @@
 package main
 
+import "base:intrinsics"
 import "core:fmt"
 import "core:math"
 import "core:math/cmplx"
-import "base:intrinsics"
+import "core:testing"
+import "core:log"
 
 @(private="file")
 int_log2 :: proc "contextless" (x: int) -> u32 {
@@ -50,8 +52,6 @@ fft :: proc(x: []complex64) {
 	}
 
 	// Decimate
-	// @TODO bit stuff here
-
 	m: u32 = int_log2(N)
 	for a: u32 = 0; a < u32(N); a += 1 {
 		b: u32 = a
@@ -93,18 +93,125 @@ ifft :: proc(x: []complex64) {
 	}
 }
 
-@(private)
-test_fft :: proc()
-{
-	data: []complex64 = { 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0 }
 
-	// forward fft
-	fft(data)
 
-	fmt.printfln("fft: %v", data)
+@(private="file")
+fft_internal :: proc(data: []complex64, out: []complex64, n, s: int) {
+    if n == 1 {
+        out[0] = data[0]
+        return
+    }
 
-	// inverse fft
-	ifft(data)
+    fft_internal(data, out, n/2, 2*s)
+    fft_internal(data[s:], out[n/2:], n/2, 2*s)
+    
+    for k in 0..<n/2 {
+        theta := -2 * math.PI * f32(k) / f32(n)
+        tf := cmplx.rect_complex64(1, theta) * out[k + n/2]
+        out[k], out[k + n/2] = out[k] + tf, out[k] - tf
+    }
+}
 
-	fmt.printfln("ifft: %v", data)
+fft_recursive :: proc(data: []complex64, out: []complex64) {
+    assert(len(data) == len(out))
+    assert(math.is_power_of_two(len(data)))
+
+    fft_internal(data, out, len(data), 1)
+}
+
+
+make_sine_wave :: proc(amp, freq, over_time: f32, num_samples: int, allocator := context.allocator) -> [dynamic]complex64 {
+	samples := make([dynamic]complex64, 0, num_samples, context.temp_allocator)
+	sample_period: f32 = over_time / f32(num_samples)
+
+	for time: f32 = 0.0; time < over_time; time += sample_period {
+		value := amp * math.sin(2 * math.PI * freq * time)
+		append(&samples, value)
+	}
+
+	return samples
+}
+
+@(test)
+test_fft :: proc(t: ^testing.T) {
+	context.logger = log.create_console_logger()
+
+	{
+		threshold :: 1e-6
+		samples: []complex64 = { 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0 }
+		samples_copy := make([]complex64, len(samples), context.temp_allocator)
+		copy(samples_copy, samples)
+
+		fft(samples_copy)
+		ifft(samples_copy)
+
+		for s, i in samples {
+			diff := s - samples_copy[i]
+			testing.expect(t, math.abs(real(diff)) < threshold)
+			testing.expect(t, math.abs(imag(diff)) < threshold)
+		}
+	}
+
+	// {
+	// 	amp :: 1
+	// 	freq :: 1
+	// 	over_time :: 2
+	// 	num_samples :: 128
+
+	// 	samples := make_sine_wave(amp, freq, over_time, num_samples, context.temp_allocator)
+	// 	log.infof("%v", samples)
+	// 	fft(samples[:])
+
+	// 	sample_rate := f32(num_samples / over_time)
+	// 	freq_bin_size := f32(sample_rate / num_samples)
+
+	// 	for s, i in samples {
+	// 		log.infof("bin: %v-%v -> %v", f32(i) * freq_bin_size, f32(i+1) * freq_bin_size, abs(s))
+	// 	}
+	// }
+
+	// {
+	// 	amp :: 2
+	// 	freq :: 3.5
+	// 	over_time :: 1
+	// 	num_samples :: 128
+
+	// 	samples := make_sine_wave(amp, freq, over_time, num_samples, context.temp_allocator)
+	// 	log.infof("%v", samples)
+	// 	fft(samples[:])
+
+	// 	sample_rate := f32(num_samples / over_time)
+	// 	freq_bin_size := f32(sample_rate / num_samples)
+
+	// 	for s, i in samples {
+	// 		log.infof("bin: %v-%v -> %v", f32(i) * freq_bin_size, f32(i+1) * freq_bin_size, abs(s))
+	// 	}
+	// }
+
+	{
+		num_samples :: 256
+		over_time :: 2
+		samples1 := make_sine_wave(1, 78, over_time, num_samples, context.temp_allocator)
+		samples2 := make_sine_wave(1, 100, over_time, num_samples, context.temp_allocator)
+
+		samples := make([dynamic]complex64, context.temp_allocator)
+		for i, _ in 0..<len(samples1) {
+			append(&samples, samples1[i] + samples2[2])
+		}
+
+		out := make([]complex64, num_samples, context.temp_allocator)
+		fft_recursive(samples[:], out)
+
+		fft(samples[:])
+
+		sample_rate := f32(num_samples / over_time)
+		freq_bin_size := f32(sample_rate / num_samples)
+
+		for s, i in samples {
+			diff := abs(s) - abs(out[i])
+			log.infof("bin: %v-%v %v            -> %v (%v) diff (%v)", f32(i) * freq_bin_size, f32(i+1) * freq_bin_size, real(s), abs(s), abs(out[i]), abs(diff) < 1e-5)
+		}
+	}
+
+	free_all(context.temp_allocator)
 }

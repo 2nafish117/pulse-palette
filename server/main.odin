@@ -5,6 +5,8 @@ import "core:fmt"
 import "core:c"
 import "core:log"
 import "core:mem"
+import "core:math"
+import "core:math/cmplx"
 
 import ma "vendor:miniaudio"
 import rl "vendor:raylib"
@@ -49,22 +51,46 @@ ServerConfig :: struct {
 }
 
 DEFAULT_SERVER_CONFIG :: ServerConfig{
-	channels = 2, 
+	channels = 2,
 	sample_rate = u32(ma.standard_sample_rate.rate_44100),
 	group_duration = 0.01,
 }
 
+GroupFrameData :: struct {
+	group_id: u64,
+	channel_data: []GroupChannelData,
+}
+
+GroupChannelData :: struct {
+	samples: [dynamic]f32,
+}
+
 main :: proc() {
+	context.logger = log.create_console_logger()
+	// meh not needed
+	// defer log.destroy_console_logger(context.logger)
+
 	cfg := DEFAULT_SERVER_CONFIG
 
-	BACKING_RINGBUFFER_FRAMES :: 1024 * 8
+	// @TODO: read from cfg file?
+
+	// only 2 supported for now
+	assert(cfg.channels == 2)
+
+	BACKING_RINGBUFFER_FRAMES :: 1024 * 16
 	backing_allocation : []f32 = make([]f32, BACKING_RINGBUFFER_FRAMES * cfg.channels)
+	log.infof("using %v kB for ring buffer",  len(backing_allocation) * size_of(f32) / mem.Kilobyte)
 	defer free(&backing_allocation)
 	
 	sample_data : UserData
+	log.info("initialising ring buffer")
 	res := ma.pcm_rb_init(ma.format.f32, cfg.channels, BACKING_RINGBUFFER_FRAMES, raw_data(backing_allocation), nil, &sample_data.samples_buffer)
 	assert(res == ma.result.SUCCESS, "pcm ringbuffer couldn't be created")
-	defer ma.pcm_rb_uninit(&sample_data.samples_buffer)
+
+	defer {
+		log.info("uninitialising ring buffer")
+		ma.pcm_rb_uninit(&sample_data.samples_buffer)
+	}
 
 	device_config := ma.device_config_init(ma.device_type.loopback)
 	device_config.capture.format = ma.format.f32
@@ -74,27 +100,34 @@ main :: proc() {
 	device_config.pUserData = &sample_data
 
 	device : ma.device
+	log.infof("initialising device %v", transmute(cstring)&device.capture.name)
 	if ma.device_init(nil, &device_config, &device) != ma.result.SUCCESS {
 		panic("failed to initialise capture device")
 	}
-	defer ma.device_uninit(&device)
+
+	defer {
+		log.infof("uninitialising device %v", transmute(cstring)&device.capture.name)
+		ma.device_uninit(&device)
+	}
 
 	if ma.device_start(&device) != ma.result.SUCCESS {
 		ma.device_uninit(&device)
 		panic("failed to start device")
 	}
 
-	fmt.println("we starting")
-
-	frame_group_id := u64(0)
+	group_id := u64(0)
 	
-	rl.InitWindow(1280, 720, "live reaction")
+	rl.InitWindow(1280, 720, "pulse pallete")
+	// rl.SetTargetFPS(i32(1.0 / cfg.group_duration))
 	rl.SetTargetFPS(60)
+
+	group_frame_data: GroupFrameData
 
 	for !rl.WindowShouldClose() {
 		delta := rl.GetFrameTime()
 
 		copied_data: []f32
+		
 
 		// num_frames_per_group: u32 = 4410
 		num_frames_per_group: u32 = u32(f32(cfg.sample_rate) * cfg.group_duration)
@@ -106,18 +139,12 @@ main :: proc() {
 			
 			copied_data = make([]f32, num_frames_per_group, context.temp_allocator)
 
-			fmt.printf("frame_group_id: %d num_frames_per_group: %d\n", frame_group_id, num_frames_per_group)
+			// fmt.printf("frame_group_id: %d num_frames_per_group: %d\n", frame_group_id, num_frames_per_group)
 			buffer_out_typed := transmute([^]f32)buffer_out
 
-			mem.copy_non_overlapping(raw_data(copied_data), buffer_out_typed, len(copied_data) * size_of(f32))
+			mem.copy_non_overlapping(raw_data(copied_data), buffer_out_typed, int(num_frames_per_group) * size_of(f32))
 			
-			// for i := u32(0); i < cfg.channels * num_frames_per_group; i += cfg.channels {
-				
-			// 	// reading only first channel
-			// 	data := buffer_out_typed[i]
-			// 	// fmt.printf("data: %f \n", data)
-			// }
-			frame_group_id += 1
+			group_id += 1
 
 			result_commit_read := ma.pcm_rb_commit_read(&sample_data.samples_buffer, num_frames_per_group, &buffer_out)
 		}
@@ -126,9 +153,44 @@ main :: proc() {
 		rl.BeginDrawing()
 
 		// draw
-		for sample, i in copied_data {
-			rl.DrawRectangle(i32(5 * i), 100, 5, i32(sample * 1000), rl.RED)
+		// for i := 0; i < int(num_frames_per_group); i += 2 {
+		// 	sample := copied_data[i]
+		// 	rl.DrawRectangle(i32(1 * i + 100), 100, 1, i32(sample * 500), rl.RED)
+		// }
+
+		// complex_data: []complex64 = make([]complex64, math.next_power_of_two(cast(int)num_frames_per_group), context.temp_allocator)
+		// for i := 0; i < int(num_frames_per_group); i += 2 {
+		// 	sample := copied_data[i]
+		// 	complex_data[i] = complex(sample, 0)
+		// }
+
+		// fft(complex_data)
+
+		// for i := 0; i < len(complex_data); i += 1 {
+		// 	sample := cmplx.abs(complex_data[i])
+		// 	rl.DrawRectangle(i32(1 * i + 100), 100, 1, i32(sample * 500), rl.RED)
+		// }
+
+		samples_test := make_sine_wave(2, 62, 2, 256, context.temp_allocator)
+		samples_test2 := make_sine_wave(1, 32, 2, 256, context.temp_allocator)
+		samples_test3 := make_sine_wave(1, 13, 2, 256, context.temp_allocator)
+		samples_test4 := make_sine_wave(3, 74, 2, 256, context.temp_allocator)
+		// log.infof("%v", samples_test)
+
+		for s, i in samples_test {
+			samples_test[i] = samples_test[i] + samples_test2[i] + samples_test3[i] + samples_test4[i]
 		}
+
+		for s, i in samples_test {
+			rl.DrawRectangle(i32(i*2 + 100), 100, 2, i32(abs(real(s)) * 10.0), rl.RED)
+		}
+
+		fft(samples_test[:])
+
+		for s, i in samples_test {
+			rl.DrawRectangle(i32(i*2 + 100), 500, 2, i32((abs(s)+10) * 0.3), rl.RED)
+		}
+
 
 		rl.EndDrawing()
 
