@@ -1,4 +1,4 @@
-package main
+package spectrum
 
 import "base:intrinsics"
 import "core:fmt"

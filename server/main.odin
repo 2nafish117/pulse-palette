@@ -11,6 +11,8 @@ import "core:math/cmplx"
 import ma "vendor:miniaudio"
 import rl "vendor:raylib"
 
+import spm "spectrum"
+
 // see docs
 // https://raw.githubusercontent.com/mackron/miniaudio/master/miniaudio.h
 
@@ -45,24 +47,35 @@ UserData :: struct {
 }
 
 ServerConfig :: struct {
-	channels: u32,
-	sample_rate: u32,
-	group_duration: f32,
+	channels: int,
+	sample_rate: int,
+	batch_sample_count: int,
+	device_type: ma.device_type,
 }
 
 DEFAULT_SERVER_CONFIG :: ServerConfig{
 	channels = 2,
-	sample_rate = u32(ma.standard_sample_rate.rate_8000),
-	group_duration = 0.2,
+	sample_rate = int(ma.standard_sample_rate.rate_44100),
+	batch_sample_count = 1024,
+	device_type = ma.device_type.loopback,
 }
 
-GroupFrameData :: struct {
-	group_id: u64,
-	channel_data: []GroupChannelData,
+ChannelSampleData :: struct {
+	samples: []f32,
 }
 
-GroupChannelData :: struct {
-	samples: [dynamic]f32,
+BatchSampleData :: struct {
+	batch_id: u64,
+	channel_data: []ChannelSampleData,
+}
+
+ChannelSpectrumData :: struct {
+	spectrum: []f32,
+}
+
+BatchSpectrumData :: struct {
+	batch_id: u64,
+	channel_data: []ChannelSpectrumData,
 }
 
 main :: proc() {
@@ -71,33 +84,34 @@ main :: proc() {
 	// defer log.destroy_console_logger(context.logger)
 
 	cfg := DEFAULT_SERVER_CONFIG
+	// @TODO: cmd params
+	log.infof("using config %v", cfg)
 
-	// @TODO: read from cfg file?
+	// @TODO: test capture devicetype
+	assert(cfg.device_type == ma.device_type.loopback || cfg.device_type == ma.device_type.capture)
 
-	// only 2 supported for now
-	assert(cfg.channels == 2)
-
-	BACKING_RINGBUFFER_FRAMES :: 1024 * 16
-	backing_allocation : []f32 = make([]f32, BACKING_RINGBUFFER_FRAMES * cfg.channels)
+	// double the size because why not
+	backing_memory_size := 2 * cfg.batch_sample_count
+	backing_allocation : []f32 = make([]f32, backing_memory_size * cfg.channels)
 	log.infof("using %v kB for ring buffer",  len(backing_allocation) * size_of(f32) / mem.Kilobyte)
 	defer free(&backing_allocation)
 	
-	sample_data : UserData
+	user_data : UserData
 	log.info("initialising ring buffer")
-	res := ma.pcm_rb_init(ma.format.f32, cfg.channels, BACKING_RINGBUFFER_FRAMES, raw_data(backing_allocation), nil, &sample_data.samples_buffer)
+	res := ma.pcm_rb_init(ma.format.f32, u32(cfg.channels), u32(backing_memory_size), raw_data(backing_allocation), nil, &user_data.samples_buffer)
 	assert(res == ma.result.SUCCESS, "pcm ringbuffer couldn't be created")
 
 	defer {
 		log.info("uninitialising ring buffer")
-		ma.pcm_rb_uninit(&sample_data.samples_buffer)
+		ma.pcm_rb_uninit(&user_data.samples_buffer)
 	}
 
-	device_config := ma.device_config_init(ma.device_type.loopback)
+	device_config := ma.device_config_init(cfg.device_type)
 	device_config.capture.format = ma.format.f32
-	device_config.capture.channels = cfg.channels
-	device_config.sampleRate = cfg.sample_rate
+	device_config.capture.channels = u32(cfg.channels)
+	device_config.sampleRate = u32(cfg.sample_rate)
 	device_config.dataCallback = data_callback
-	device_config.pUserData = &sample_data
+	device_config.pUserData = &user_data
 
 	device : ma.device
 	log.infof("initialising device %v", transmute(cstring)&device.capture.name)
@@ -114,62 +128,26 @@ main :: proc() {
 		ma.device_uninit(&device)
 		panic("failed to start device")
 	}
-
-	group_id := u64(0)
 	
-	rl.InitWindow(1280/2, 720/2, "pulse pallete")
-	// rl.SetTargetFPS(i32(1.0 / cfg.group_duration))
-	rl.SetTargetFPS(60)
-
-	group_frame_data: GroupFrameData
+	rl.InitWindow(1280, 720, "pulse pallete")
+	target_frame_rate := f32(cfg.sample_rate) / f32(cfg.batch_sample_count)
+	log.infof("setting target frame rate for sample_rate: %v, batch_sample_count: %v, target_fps: %v", cfg.sample_rate, cfg.batch_sample_count, target_frame_rate)
+	rl.SetTargetFPS(i32(target_frame_rate))
 
 	for !rl.WindowShouldClose() {
 		delta := rl.GetFrameTime()
 
-		copied_data: []f32
-		
+		sample_data := get_sample_data(&cfg, &user_data)
+		spectrum_data := calculate_spectrum_data(&cfg, &sample_data)
+		// log.infof("%v", spectrum_data)
 
-		// num_frames_per_group: u32 = 4410
-		num_frames_per_group: u32 = u32(f32(cfg.sample_rate) * cfg.group_duration)
-
-		buffer_out: rawptr
-		result := ma.pcm_rb_acquire_read(&sample_data.samples_buffer, &num_frames_per_group, &buffer_out)
-
-		if result == ma.result.SUCCESS {
-			
-			copied_data = make([]f32, num_frames_per_group, context.temp_allocator)
-
-			// fmt.printf("frame_group_id: %d num_frames_per_group: %d\n", frame_group_id, num_frames_per_group)
-			buffer_out_typed := transmute([^]f32)buffer_out
-
-			// @TODO: extract array per channel, each channel is fft'd
-			mem.copy_non_overlapping(raw_data(copied_data), buffer_out_typed, int(num_frames_per_group) * size_of(f32))
-			
-			group_id += 1
-
-			result_commit_read := ma.pcm_rb_commit_read(&sample_data.samples_buffer, num_frames_per_group, &buffer_out)
-		}
-
-		rl.ClearBackground({0, 0, 0, 255})
+		rl.ClearBackground({16, 16, 16, 255})
 		rl.BeginDrawing()
 
-		// draw
-		// for i := 0; i < int(num_frames_per_group); i += 2 {
-		// 	sample := copied_data[i]
-		// 	rl.DrawRectangle(i32(1 * i + 100), 100, 1, i32(sample * 500), rl.RED)
-		// }
-
-		complex_data: []complex64 = make([]complex64, math.next_power_of_two(cast(int)num_frames_per_group), context.temp_allocator)
-		for i := 0; i < int(num_frames_per_group); i += 2 {
-			sample := copied_data[i]
-			complex_data[i] = complex(sample, 0)
-		}
-
-		fft(complex_data)
-
-		for i := 0; i < len(complex_data); i += 1 {
-			sample := cmplx.abs(complex_data[i])
-			rl.DrawRectangle(i32(1 * i + 100), 100, 1, i32(sample * 70), rl.RED)
+		// @TODO
+		for _, i in spectrum_data.channel_data[0].spectrum {
+			value := spectrum_data.channel_data[0].spectrum[i]
+			rl.DrawRectangle(100 + i32(i), 100, 1, i32(value) * 5, rl.RED)
 		}
 
 		rl.EndDrawing()
@@ -177,5 +155,57 @@ main :: proc() {
 		free_all(context.temp_allocator)
 	}
 
-	rl.CloseWindow()    
+    rl.CloseWindow()
+}
+
+get_sample_data :: proc(cfg: ^ServerConfig, user_data: ^UserData) -> BatchSampleData {
+	sample_data: BatchSampleData
+
+	@(static) batch_id: u64 = 0
+	buffer_out: rawptr
+	num_frames_per_batch: u32 = u32(cfg.batch_sample_count)
+
+	result := ma.pcm_rb_acquire_read(&user_data.samples_buffer, &num_frames_per_batch, &buffer_out)
+
+	if result == ma.result.SUCCESS {
+		
+		// allocate mem for each channel
+		sample_data.batch_id = batch_id
+		sample_data.channel_data = make([]ChannelSampleData, cfg.channels, context.temp_allocator)
+		for &channel in sample_data.channel_data {
+			channel.samples = make([]f32, cfg.batch_sample_count, context.temp_allocator)
+		}
+
+		buffer_out_typed := transmute([^]f32)buffer_out
+
+		log.infof("num_frames_per_batch: %v", num_frames_per_batch)
+
+		j: int = 0
+		// copy into each channel array
+		for i: int = 0; i < int(num_frames_per_batch); i += cfg.channels {
+			for c: int = 0; c < cfg.channels; c += 1 {
+				value := buffer_out_typed[i + c]
+				sample_data.channel_data[c].samples[j] = value
+				j += 1
+			}
+		}
+		
+		batch_id += 1
+		result_commit_read := ma.pcm_rb_commit_read(&user_data.samples_buffer, num_frames_per_batch, &buffer_out)
+	}
+
+	return sample_data
+}
+
+calculate_spectrum_data :: proc(cfg: ^ServerConfig, sample_data: ^BatchSampleData) -> BatchSpectrumData {
+	spectrum_data: BatchSpectrumData
+	spectrum_data.batch_id = sample_data.batch_id
+	spectrum_data.channel_data = make([]ChannelSpectrumData, cfg.channels, context.temp_allocator)
+
+	for _, i in spectrum_data.channel_data {
+		channel_sample_data := sample_data.channel_data[i]
+		spectrum_data.channel_data[i].spectrum = spm.analyse_spectrum(channel_sample_data.samples[:], context.temp_allocator)
+	}
+
+	return spectrum_data
 }
