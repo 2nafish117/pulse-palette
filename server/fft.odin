@@ -3,31 +3,19 @@ package main
 import "base:intrinsics"
 import "core:fmt"
 import "core:math"
+import "core:math/bits"
 import "core:math/cmplx"
 import "core:testing"
 import "core:log"
 
-@(private="file")
-int_log2 :: proc "contextless" (x: int) -> u32 {
-	x := x
-	
-	res: u32 = 0
-	for x != 0 {
-		x = x >> 1
-		res += 1
-	}
-
-	return res - 1
-}
-
 // ported to odin from rosetta code
 // Cooley-Tukey FFT (in-place, breadth-first, decimation-in-frequency)
 fft :: proc(x: []complex64) {
-	assert(math.is_power_of_two(len(x)))
+	assert(math.is_power_of_two(len(x)), "need a slice length that must be a power of 2 to calculate fft")
 
 	// DFT
-	N: int = len(x)
-	k: int = N
+	N: u32 = cast(u32)len(x)
+	k: u32 = N
 
 	theta := math.PI / f32(N)
 
@@ -36,13 +24,13 @@ fft :: proc(x: []complex64) {
 	phi: complex64 = complex(c, -s)
 
 	for k > 1 {
-		n: int = k
+		n: u32 = k
 		k >>= 1
 		phi = phi * phi
 		T: complex64 = 1.0
-		for l: int = 0; l < k; l += 1 {
-			for a: int = l; a < N; a += n {
-				b: int = a + k
+		for l: u32 = 0; l < k; l += 1 {
+			for a: u32 = l; a < N; a += n {
+				b: u32 = a + k
 				t: complex64 = x[a] - x[b]
 				x[a] += x[b]
 				x[b] = t * T
@@ -52,7 +40,7 @@ fft :: proc(x: []complex64) {
 	}
 
 	// Decimate
-	m: u32 = int_log2(N)
+	m: u32 = bits.log2(N)
 	for a: u32 = 0; a < u32(N); a += 1 {
 		b: u32 = a
 		// Reverse bits
@@ -72,7 +60,7 @@ fft :: proc(x: []complex64) {
 
 // inverse fft (in-place)
 ifft :: proc(x: []complex64) {
-	assert(math.is_power_of_two(len(x)))
+	assert(math.is_power_of_two(len(x)), "need a slice length that must be a power of 2 to calculate ifft")
 
 	// conjugate the complex numbers
 	for &i in x {
@@ -93,8 +81,6 @@ ifft :: proc(x: []complex64) {
 	}
 }
 
-
-
 @(private="file")
 fft_internal :: proc(data: []complex64, out: []complex64, n, s: int) {
     if n == 1 {
@@ -112,13 +98,13 @@ fft_internal :: proc(data: []complex64, out: []complex64, n, s: int) {
     }
 }
 
+@(private="file")
 fft_recursive :: proc(data: []complex64, out: []complex64) {
     assert(len(data) == len(out))
     assert(math.is_power_of_two(len(data)))
 
     fft_internal(data, out, len(data), 1)
 }
-
 
 make_sine_wave :: proc(amp, freq, over_time: f32, num_samples: int, allocator := context.allocator) -> [dynamic]complex64 {
 	samples := make([dynamic]complex64, 0, num_samples, context.temp_allocator)
@@ -152,65 +138,121 @@ test_fft :: proc(t: ^testing.T) {
 		}
 	}
 
-	// {
-	// 	amp :: 1
-	// 	freq :: 1
-	// 	over_time :: 2
-	// 	num_samples :: 128
+	{
+		amp :: 1
+		freq :: 3
+		over_time :: 1
+		num_samples :: 128
 
-	// 	samples := make_sine_wave(amp, freq, over_time, num_samples, context.temp_allocator)
-	// 	log.infof("%v", samples)
-	// 	fft(samples[:])
+		samples := make_sine_wave(amp, freq, over_time, num_samples, context.temp_allocator)
+		fft(samples[:])
 
-	// 	sample_rate := f32(num_samples / over_time)
-	// 	freq_bin_size := f32(sample_rate / num_samples)
+		sample_rate := f32(num_samples / over_time)
+		assert(sample_rate >= freq, "fft cannot find amount of frequency that is not in bin range")
+		freq_bin_size := f32(sample_rate / num_samples)
 
-	// 	for s, i in samples {
-	// 		log.infof("bin: %v-%v -> %v", f32(i) * freq_bin_size, f32(i+1) * freq_bin_size, abs(s))
-	// 	}
-	// }
+		// for s, i in samples {
+		// 	log.infof("bin: %v-%v -> %v", f32(i) * freq_bin_size, f32(i+1) * freq_bin_size, abs(s))
+		// }
 
-	// {
-	// 	amp :: 2
-	// 	freq :: 3.5
-	// 	over_time :: 1
-	// 	num_samples :: 128
-
-	// 	samples := make_sine_wave(amp, freq, over_time, num_samples, context.temp_allocator)
-	// 	log.infof("%v", samples)
-	// 	fft(samples[:])
-
-	// 	sample_rate := f32(num_samples / over_time)
-	// 	freq_bin_size := f32(sample_rate / num_samples)
-
-	// 	for s, i in samples {
-	// 		log.infof("bin: %v-%v -> %v", f32(i) * freq_bin_size, f32(i+1) * freq_bin_size, abs(s))
-	// 	}
-	// }
+		threshold :: 1e-2
+		diff: f32 = abs(samples[over_time * freq]) - amp * num_samples * 0.5
+		testing.expect(t, abs(diff) < threshold)
+	}
 
 	{
-		num_samples :: 256
-		over_time :: 2
-		samples1 := make_sine_wave(1, 78, over_time, num_samples, context.temp_allocator)
-		samples2 := make_sine_wave(1, 100, over_time, num_samples, context.temp_allocator)
+		amp :: 1
+		freq :: 34
+		over_time :: 1
+		num_samples :: 128
 
-		samples := make([dynamic]complex64, context.temp_allocator)
-		for i, _ in 0..<len(samples1) {
-			append(&samples, samples1[i] + samples2[2])
+		samples := make_sine_wave(amp, freq, over_time, num_samples, context.temp_allocator)
+		fft(samples[:])
+
+		sample_rate := f32(num_samples / over_time)
+		assert(sample_rate >= freq, "fft cannot find amount of frequency that is not in bin range")
+		freq_bin_size := f32(sample_rate / num_samples)
+
+		// for s, i in samples {
+		// 	log.infof("bin: %v-%v -> %v", f32(i) * freq_bin_size, f32(i+1) * freq_bin_size, abs(s))
+		// }
+
+		threshold :: 1e-2
+		diff: f32 = abs(samples[over_time * freq]) - amp * num_samples * 0.5
+		testing.expect(t, abs(diff) < threshold)
+	}
+
+	{
+		amp :: 3
+		freq :: 22
+		over_time :: 5
+		num_samples :: 256
+
+		samples := make_sine_wave(amp, freq, over_time, num_samples, context.temp_allocator)
+		fft(samples[:])
+
+		sample_rate := f32(num_samples / over_time)
+		assert(sample_rate >= freq, "fft cannot find amount of frequency that is not in bin range")
+		freq_bin_size := f32(sample_rate / num_samples)
+
+		// for s, i in samples {
+		// 	log.infof("bin: %v: %v-%v -> %v", i, f32(i) * freq_bin_size, f32(i+1) * freq_bin_size, abs(s))
+		// }
+
+		threshold :: 1e-2
+		diff: f32 = abs(samples[over_time * freq]) - amp * num_samples * 0.5
+		testing.expect(t, abs(diff) < threshold)
+	}
+
+	{
+		over_time :: 5
+		num_samples :: 256
+		
+		amp1 :: 3
+		freq1 :: 22
+		samples1 := make_sine_wave(amp1, freq1, over_time, num_samples, context.temp_allocator)
+		
+		amp2 :: 2
+		freq2 :: 43
+		samples2 := make_sine_wave(amp2, freq2, over_time, num_samples, context.temp_allocator)
+
+		amp3 :: 6
+		freq3 :: 12
+		samples3 := make_sine_wave(amp3, freq3, over_time, num_samples, context.temp_allocator)
+
+		samples := make([dynamic]complex64, 0, num_samples, context.temp_allocator)
+
+		for _, i in 0..<num_samples {
+			append(&samples, samples1[i] + samples2[i] + samples3[i])
 		}
 
-		out := make([]complex64, num_samples, context.temp_allocator)
-		fft_recursive(samples[:], out)
+		assert(len(samples) == num_samples)
 
 		fft(samples[:])
 
 		sample_rate := f32(num_samples / over_time)
+
+		// @TODO: check, isnt this supposed to be 2 * sample_rate >= freq...?
+		assert(sample_rate >= freq1, "fft cannot find amount of frequency that is not in bin range")
+		assert(sample_rate >= freq2, "fft cannot find amount of frequency that is not in bin range")
+		assert(sample_rate >= freq3, "fft cannot find amount of frequency that is not in bin range")
+
 		freq_bin_size := f32(sample_rate / num_samples)
 
-		for s, i in samples {
-			diff := abs(s) - abs(out[i])
-			log.infof("bin: %v-%v %v            -> %v (%v) diff (%v)", f32(i) * freq_bin_size, f32(i+1) * freq_bin_size, real(s), abs(s), abs(out[i]), abs(diff) < 1e-5)
-		}
+		// for s, i in samples {
+		// 	log.infof("bin: %v: %v-%v -> %v", i, f32(i) * freq_bin_size, f32(i+1) * freq_bin_size, abs(s))
+		// }
+
+		threshold :: 1e-1
+
+		diff1: f32 = abs(samples[over_time * freq1]) - amp1 * num_samples * 0.5
+		testing.expect(t, abs(diff1) < threshold)
+
+		diff2: f32 = abs(samples[over_time * freq2]) - amp2 * num_samples * 0.5
+		testing.expect(t, abs(diff2) < threshold)
+
+		diff3: f32 = abs(samples[over_time * freq3]) - amp3 * num_samples * 0.5
+		testing.expect(t, abs(diff3) < threshold)
 	}
 
 	free_all(context.temp_allocator)

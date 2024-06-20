@@ -171,7 +171,7 @@ main :: proc() {
 		// 	rl.DrawRectangle(i32(1 * i + 100), 100, 1, i32(sample * 500), rl.RED)
 		// }
 
-		samples_test := make_sine_wave(2, 62, 2, 256, context.temp_allocator)
+		samples_test := make_sine_wave(2, 1, 2, 256, context.temp_allocator)
 		samples_test2 := make_sine_wave(1, 32, 2, 256, context.temp_allocator)
 		samples_test3 := make_sine_wave(1, 13, 2, 256, context.temp_allocator)
 		samples_test4 := make_sine_wave(3, 74, 2, 256, context.temp_allocator)
