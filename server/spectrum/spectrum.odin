@@ -15,7 +15,7 @@ analyse_spectrum :: proc(samples: []f32, allocator := context.temp_allocator) ->
 	fft(complex_samples)
 
 	// copy into spectrum
-	spectrum: []f32 = make([]f32, len(samples) / 2, allocator)
+	spectrum: []f32 = make([]f32, len(samples)/4, allocator)
 	for _, i in spectrum {
 		spectrum[i] = abs(complex_samples[i])
 	}

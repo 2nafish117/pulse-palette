@@ -80,8 +80,7 @@ BatchSpectrumData :: struct {
 
 main :: proc() {
 	context.logger = log.create_console_logger()
-	// meh not needed
-	// defer log.destroy_console_logger(context.logger)
+	defer log.destroy_console_logger(context.logger)
 
 	cfg := DEFAULT_SERVER_CONFIG
 	// @TODO: cmd params
@@ -128,6 +127,9 @@ main :: proc() {
 		ma.device_uninit(&device)
 		panic("failed to start device")
 	}
+
+	// @TODO: server loop
+
 	
 	rl.InitWindow(1280, 720, "pulse pallete")
 	target_frame_rate := f32(cfg.sample_rate) / f32(cfg.batch_sample_count)
@@ -147,7 +149,7 @@ main :: proc() {
 		// @TODO
 		for _, i in spectrum_data.channel_data[0].spectrum {
 			value := spectrum_data.channel_data[0].spectrum[i]
-			rl.DrawRectangle(100 + i32(i), 100, 1, i32(value) * 5, rl.RED)
+			rl.DrawRectangle(100 + i32(i * 10), 100, 7, i32(value) * 3, rl.RED)
 		}
 
 		rl.EndDrawing()
