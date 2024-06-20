@@ -52,8 +52,8 @@ ServerConfig :: struct {
 
 DEFAULT_SERVER_CONFIG :: ServerConfig{
 	channels = 2,
-	sample_rate = u32(ma.standard_sample_rate.rate_44100),
-	group_duration = 0.01,
+	sample_rate = u32(ma.standard_sample_rate.rate_8000),
+	group_duration = 0.2,
 }
 
 GroupFrameData :: struct {
@@ -117,7 +117,7 @@ main :: proc() {
 
 	group_id := u64(0)
 	
-	rl.InitWindow(1280, 720, "pulse pallete")
+	rl.InitWindow(1280/2, 720/2, "pulse pallete")
 	// rl.SetTargetFPS(i32(1.0 / cfg.group_duration))
 	rl.SetTargetFPS(60)
 
@@ -142,6 +142,7 @@ main :: proc() {
 			// fmt.printf("frame_group_id: %d num_frames_per_group: %d\n", frame_group_id, num_frames_per_group)
 			buffer_out_typed := transmute([^]f32)buffer_out
 
+			// @TODO: extract array per channel, each channel is fft'd
 			mem.copy_non_overlapping(raw_data(copied_data), buffer_out_typed, int(num_frames_per_group) * size_of(f32))
 			
 			group_id += 1
@@ -158,39 +159,18 @@ main :: proc() {
 		// 	rl.DrawRectangle(i32(1 * i + 100), 100, 1, i32(sample * 500), rl.RED)
 		// }
 
-		// complex_data: []complex64 = make([]complex64, math.next_power_of_two(cast(int)num_frames_per_group), context.temp_allocator)
-		// for i := 0; i < int(num_frames_per_group); i += 2 {
-		// 	sample := copied_data[i]
-		// 	complex_data[i] = complex(sample, 0)
-		// }
-
-		// fft(complex_data)
-
-		// for i := 0; i < len(complex_data); i += 1 {
-		// 	sample := cmplx.abs(complex_data[i])
-		// 	rl.DrawRectangle(i32(1 * i + 100), 100, 1, i32(sample * 500), rl.RED)
-		// }
-
-		samples_test := make_sine_wave(2, 1, 2, 256, context.temp_allocator)
-		samples_test2 := make_sine_wave(1, 32, 2, 256, context.temp_allocator)
-		samples_test3 := make_sine_wave(1, 13, 2, 256, context.temp_allocator)
-		samples_test4 := make_sine_wave(3, 74, 2, 256, context.temp_allocator)
-		// log.infof("%v", samples_test)
-
-		for s, i in samples_test {
-			samples_test[i] = samples_test[i] + samples_test2[i] + samples_test3[i] + samples_test4[i]
+		complex_data: []complex64 = make([]complex64, math.next_power_of_two(cast(int)num_frames_per_group), context.temp_allocator)
+		for i := 0; i < int(num_frames_per_group); i += 2 {
+			sample := copied_data[i]
+			complex_data[i] = complex(sample, 0)
 		}
 
-		for s, i in samples_test {
-			rl.DrawRectangle(i32(i*2 + 100), 100, 2, i32(abs(real(s)) * 10.0), rl.RED)
+		fft(complex_data)
+
+		for i := 0; i < len(complex_data); i += 1 {
+			sample := cmplx.abs(complex_data[i])
+			rl.DrawRectangle(i32(1 * i + 100), 100, 1, i32(sample * 70), rl.RED)
 		}
-
-		fft(samples_test[:])
-
-		for s, i in samples_test {
-			rl.DrawRectangle(i32(i*2 + 100), 500, 2, i32((abs(s)+10) * 0.3), rl.RED)
-		}
-
 
 		rl.EndDrawing()
 
