@@ -1,12 +1,16 @@
 package main
 
 import "base:runtime"
+import "base:intrinsics"
 import "core:fmt"
 import "core:c"
 import "core:log"
 import "core:mem"
 import "core:math"
 import "core:math/cmplx"
+import "core:net"
+import "core:time"
+import "core:sys/windows"
 
 import ma "vendor:miniaudio"
 import rl "vendor:raylib"
@@ -128,36 +132,68 @@ main :: proc() {
 		panic("failed to start device")
 	}
 
-	// @TODO: server loop
-
-	
-	rl.InitWindow(1280, 720, "pulse pallete")
-	target_frame_rate := f32(cfg.sample_rate) / f32(cfg.batch_sample_count)
-	log.infof("setting target frame rate for sample_rate: %v, batch_sample_count: %v, target_fps: %v", cfg.sample_rate, cfg.batch_sample_count, target_frame_rate)
-	rl.SetTargetFPS(i32(target_frame_rate))
-
-	for !rl.WindowShouldClose() {
-		delta := rl.GetFrameTime()
-
-		sample_data := get_sample_data(&cfg, &user_data)
-		spectrum_data := calculate_spectrum_data(&cfg, &sample_data)
-		// log.infof("%v", spectrum_data)
-
-		rl.ClearBackground({16, 16, 16, 255})
-		rl.BeginDrawing()
-
-		// @TODO
-		for _, i in spectrum_data.channel_data[0].spectrum {
-			value := spectrum_data.channel_data[0].spectrum[i]
-			rl.DrawRectangle(100 + i32(i * 10), 100, 7, i32(value) * 3, rl.RED)
-		}
-
-		rl.EndDrawing()
-
-		free_all(context.temp_allocator)
+	when ODIN_OS == .Windows {
+		// to get accurate_sleep to actually sleep accurately on windows
+		windows.timeBeginPeriod(1)
 	}
 
-    rl.CloseWindow()
+	// @TODO: nobody wants frame rate, just keep the frame time
+	target_frame_rate := f32(cfg.sample_rate) / f32(cfg.batch_sample_count)
+	log.infof("setting target frame rate for sample_rate: %v, batch_sample_count: %v, target_fps: %v", cfg.sample_rate, cfg.batch_sample_count, target_frame_rate)
+	target_frame_time_duration := time.Duration(cast(i64)(f32(time.Second) / target_frame_rate))
+
+	tick_now: time.Tick = time.tick_now()
+	delta: time.Duration
+
+	for true {
+		delta = time.tick_since(tick_now)
+		tick_now = time.tick_now()
+
+		// do all work
+		{
+			sample_data := get_sample_data(&cfg, &user_data)
+			spectrum_data := calculate_spectrum_data(&cfg, &sample_data)
+			log.infof("%v", spectrum_data)
+
+			free_all(context.temp_allocator)
+		}
+
+		// sleep for the remainder of time after some work is done
+		work_ticks := time.tick_diff(tick_now, time.tick_now())
+		assert(target_frame_time_duration - work_ticks >= 0)
+		time.accurate_sleep(target_frame_time_duration - work_ticks)
+	}
+	
+	when ODIN_OS == .Windows {
+		// im done with windows wanting me to give me accurate sleeps
+		windows.timeEndPeriod(1)
+	}
+
+	// rl.InitWindow(1280, 720, "pulse pallete")
+	// rl.SetTargetFPS(i32(target_frame_rate))
+
+	// for !rl.WindowShouldClose() {
+	// 	delta := rl.GetFrameTime()
+
+	// 	sample_data := get_sample_data(&cfg, &user_data)
+	// 	spectrum_data := calculate_spectrum_data(&cfg, &sample_data)
+	// 	// log.infof("%v", spectrum_data)
+
+	// 	rl.ClearBackground({16, 16, 16, 255})
+	// 	rl.BeginDrawing()
+
+	// 	// @TODO
+	// 	for _, i in spectrum_data.channel_data[0].spectrum {
+	// 		value := spectrum_data.channel_data[0].spectrum[i]
+	// 		rl.DrawRectangle(100 + i32(i * 10), 100, 7, i32(value) * 3, rl.RED)
+	// 	}
+
+	// 	rl.EndDrawing()
+
+	// 	free_all(context.temp_allocator)
+	// }
+
+    // rl.CloseWindow()
 }
 
 get_sample_data :: proc(cfg: ^ServerConfig, user_data: ^UserData) -> BatchSampleData {
