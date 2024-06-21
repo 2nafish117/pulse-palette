@@ -11,6 +11,8 @@ import "core:math/cmplx"
 import "core:net"
 import "core:time"
 import "core:sys/windows"
+import "core:encoding/json"
+import "core:slice"
 
 import ma "vendor:miniaudio"
 import rl "vendor:raylib"
@@ -20,7 +22,57 @@ import spm "spectrum"
 // see docs
 // https://raw.githubusercontent.com/mackron/miniaudio/master/miniaudio.h
 
-thing : bool = false
+UserData :: struct {
+	samples_buffer : ma.pcm_rb
+}
+
+ServerConfig :: struct {
+	channels: int,
+	sample_rate: int,
+	batch_sample_count: int,
+	device_type: ma.device_type,
+	send_address: net.IP4_Address,
+	send_port: int,
+}
+
+DEFAULT_SERVER_CONFIG :: ServerConfig{
+	channels = 2,
+	sample_rate = int(ma.standard_sample_rate.rate_44100),
+	batch_sample_count = 1024,
+	device_type = ma.device_type.loopback,
+	send_address = net.IP4_Address{255, 255, 255, 255},
+	send_port = 6969,
+}
+
+ChannelSampleData :: struct {
+	samples: []f32,
+}
+
+BatchSampleData :: struct {
+	batch_id: u64,
+	channel_data: []ChannelSampleData,
+}
+
+// protocol structs
+
+ChannelSpectrumData :: struct {
+	spectrum: []f32,
+}
+
+BatchSpectrumData :: struct {
+	batch_id: u64,
+	channel_data: []ChannelSpectrumData,
+}
+
+
+// simpler struct for c
+SpectrumPacketData :: struct {
+	packet_id: u64,
+	sample_rate: u32,
+	spectrum_data: BatchSpectrumData,
+	hello: u64,
+}
+
 data_callback :: proc "c" (pDevice : ^ma.device, pOutput : rawptr, pInput : rawptr, frameCount : u32) {
 	// In playback mode copy data to pOutput. In capture mode read data from pInput. In full-duplex mode, both
 	// pOutput and pInput will be valid and you can move data from pInput into pOutput. Never process more than
@@ -44,42 +96,6 @@ data_callback :: proc "c" (pDevice : ^ma.device, pOutput : rawptr, pInput : rawp
 
 	result2 := ma.pcm_rb_commit_write(&user_data.samples_buffer, frameCount, write_ptr)
 	assert(result2 == ma.result.SUCCESS)
-}
-
-UserData :: struct {
-	samples_buffer : ma.pcm_rb
-}
-
-ServerConfig :: struct {
-	channels: int,
-	sample_rate: int,
-	batch_sample_count: int,
-	device_type: ma.device_type,
-}
-
-DEFAULT_SERVER_CONFIG :: ServerConfig{
-	channels = 2,
-	sample_rate = int(ma.standard_sample_rate.rate_44100),
-	batch_sample_count = 1024,
-	device_type = ma.device_type.loopback,
-}
-
-ChannelSampleData :: struct {
-	samples: []f32,
-}
-
-BatchSampleData :: struct {
-	batch_id: u64,
-	channel_data: []ChannelSampleData,
-}
-
-ChannelSpectrumData :: struct {
-	spectrum: []f32,
-}
-
-BatchSpectrumData :: struct {
-	batch_id: u64,
-	channel_data: []ChannelSpectrumData,
 }
 
 main :: proc() {
@@ -144,19 +160,19 @@ main :: proc() {
 
 	net.set_option(socket, .Broadcast, true) //or_else panic("could not set socket to broadcast")
 
-	endpoint: net.Endpoint
-	endpoint.address = net.IP4_Address{255, 255, 255, 255}
-	endpoint.port = 6969
+	endpoint: net.Endpoint = {
+		address = cfg.send_address,
+		port = cfg.send_port
+	}
 
-	// @TODO: nobody wants frame rate, just keep the frame time
-	target_frame_rate := f32(cfg.sample_rate) / f32(cfg.batch_sample_count)
-	log.infof("setting target frame rate for sample_rate: %v, batch_sample_count: %v, target_fps: %v", cfg.sample_rate, cfg.batch_sample_count, target_frame_rate)
-	target_frame_time_duration := time.Duration(cast(i64)(f32(time.Second) / target_frame_rate))
+	// ugh the casts...
+	target_frame_time := time.Duration(cast(i64)(f32(int(time.Second) * cfg.batch_sample_count) / f32(cfg.sample_rate)))
+	log.infof("setting target frame time for sample_rate: %v, batch_sample_count: %v, target frame time: %v", cfg.sample_rate, cfg.batch_sample_count, target_frame_time)
 
 	tick_now: time.Tick = time.tick_now()
 	delta: time.Duration
 
-	for true {
+	for {
 		delta = time.tick_since(tick_now)
 		tick_now = time.tick_now()
 
@@ -164,19 +180,37 @@ main :: proc() {
 		{
 			sample_data := get_sample_data(&cfg, &user_data)
 			spectrum_data := calculate_spectrum_data(&cfg, &sample_data)
-			// log.infof("%v", spectrum_data)
+			
+			// do a deep copy here
+			packet_data := SpectrumPacketData{
+				packet_id = 69,
+				sample_rate = u32(cfg.sample_rate),
+				spectrum_data = spectrum_data,
+				hello = 42,
+			}
 
-			data: string = "yoww we in buidness"
-			net.send_udp(socket.(net.UDP_Socket), transmute([]byte)data, endpoint)
-			// @TODO: send data over net
+			// packet_data.spectrum_data.channel_data = slice.clone(spectrum_data.channel_data)
+			// for &cd, i in packet_data.spectrum_data.channel_data {
+			// 	cd.spectrum = slice.clone(spectrum_data.channel_data[i].spectrum)
+			// }
+
+			data, err := json.marshal(packet_data, json.Marshal_Options{}, context.temp_allocator)
+			log.infof("marshallederr: %v len data: %v", err, len(data))
+			
+			// packet_data_back: SpectrumPacketData
+			// back_err := json.unmarshal(data, &packet_data_back, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+			// assert(back_err == nil, "yow 2")
+			// log.infof("unmarshalled: %v err: %v", packet_data_back, back_err)
+
+			net.send_udp(socket.(net.UDP_Socket), data, endpoint)
 
 			free_all(context.temp_allocator)
 		}
 
 		// sleep for the remainder of time after some work is done
 		work_ticks := time.tick_diff(tick_now, time.tick_now())
-		assert(target_frame_time_duration - work_ticks >= 0)
-		time.accurate_sleep(target_frame_time_duration - work_ticks)
+		assert(target_frame_time - work_ticks >= 0)
+		time.accurate_sleep(target_frame_time - work_ticks)
 	}
 	
 	when ODIN_OS == .Windows {
