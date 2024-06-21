@@ -128,7 +128,6 @@ main :: proc() {
 	}
 
 	if ma.device_start(&device) != ma.result.SUCCESS {
-		ma.device_uninit(&device)
 		panic("failed to start device")
 	}
 
@@ -136,6 +135,18 @@ main :: proc() {
 		// to get accurate_sleep to actually sleep accurately on windows
 		windows.timeBeginPeriod(1)
 	}
+
+	socket := net.create_socket(.IP4, .UDP) or_else panic("failed to create udp socket")
+	defer {
+		log.infof("closing socket")
+		net.close(socket)
+	}
+
+	net.set_option(socket, .Broadcast, true) //or_else panic("could not set socket to broadcast")
+
+	endpoint: net.Endpoint
+	endpoint.address = net.IP4_Address{255, 255, 255, 255}
+	endpoint.port = 6969
 
 	// @TODO: nobody wants frame rate, just keep the frame time
 	target_frame_rate := f32(cfg.sample_rate) / f32(cfg.batch_sample_count)
@@ -153,7 +164,11 @@ main :: proc() {
 		{
 			sample_data := get_sample_data(&cfg, &user_data)
 			spectrum_data := calculate_spectrum_data(&cfg, &sample_data)
-			log.infof("%v", spectrum_data)
+			// log.infof("%v", spectrum_data)
+
+			data: string = "yoww we in buidness"
+			net.send_udp(socket.(net.UDP_Socket), transmute([]byte)data, endpoint)
+			// @TODO: send data over net
 
 			free_all(context.temp_allocator)
 		}

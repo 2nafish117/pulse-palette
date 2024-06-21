@@ -1,8 +1,8 @@
 package main
 
-import "core:fmt"
+import "core:log"
+import "core:net"
 import rl "vendor:raylib"
-import "soln:viz"
 
 WindowWidth :: 1280
 WindowHeight :: 720
@@ -22,22 +22,48 @@ draw :: proc(delta: f32) {
 }
 
 main :: proc() {
-    rl.InitWindow(WindowWidth, WindowHeight, "live reaction")
-    rl.SetTargetFPS(60)
+	context.logger = log.create_console_logger()
 
-    thig : u32 = 0
+	log.infof("hellope")
+	socket := net.create_socket(.IP4, .UDP) or_else panic("failed to create udp socket")
+	defer {
+		log.infof("closing socket")
+		net.close(socket)
+	}
 
-    for !rl.WindowShouldClose() {
-        delta := rl.GetFrameTime()
+	endpoint: net.Endpoint
+	endpoint.address = net.IP4_Loopback
+	endpoint.port = 6969
+	net.bind(socket, endpoint)// or_else panic("unable to bind socket")
 
-        input(delta)
-        tick(delta)
+	log.infof("hellope")
 
-        rl.ClearBackground({0, 0, 0, 255})
-        rl.BeginDrawing()
-        draw(delta)
-        rl.EndDrawing()
-    }
+	for true {
+		log.infof("hellope")
+		buffer: []byte = make([]byte, 1024, context.temp_allocator)
+		bytes_read, remote_endpoint, err := net.recv_udp(socket.(net.UDP_Socket), buffer)
+		log.infof("hellope")
+		log.infof("read data: %v", buffer)
 
-    rl.CloseWindow()
+		free_all(context.temp_allocator)
+	}
+
+    // rl.InitWindow(WindowWidth, WindowHeight, "live reaction")
+    // rl.SetTargetFPS(60)
+
+    // thig : u32 = 0
+
+    // for !rl.WindowShouldClose() {
+    //     delta := rl.GetFrameTime()
+
+    //     input(delta)
+    //     tick(delta)
+
+    //     rl.ClearBackground({0, 0, 0, 255})
+    //     rl.BeginDrawing()
+    //     draw(delta)
+    //     rl.EndDrawing()
+    // }
+
+    // rl.CloseWindow()
 }
