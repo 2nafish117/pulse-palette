@@ -22,7 +22,6 @@ BatchSpectrumData :: struct {
 	channel_data: []ChannelSpectrumData,
 }
 
-
 // simpler struct for c
 SpectrumPacketData :: struct {
 	packet_id: u64,
@@ -78,7 +77,6 @@ main :: proc() {
 		back_err := json.unmarshal(buffer, &packet_data, json.DEFAULT_SPECIFICATION, context.temp_allocator)
 		// log.infof("read data: %v %v", packet_data, back_err)
 
-		
         rl.ClearBackground({0, 0, 0, 255})
         rl.BeginDrawing()
         

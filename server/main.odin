@@ -23,7 +23,7 @@ import spm "spectrum"
 // https://raw.githubusercontent.com/mackron/miniaudio/master/miniaudio.h
 
 UserData :: struct {
-	samples_buffer : ma.pcm_rb
+	samples_buffer : ma.pcm_rb,
 }
 
 ServerConfig :: struct {
@@ -42,60 +42,6 @@ DEFAULT_SERVER_CONFIG :: ServerConfig{
 	device_type = ma.device_type.loopback,
 	send_address = net.IP4_Address{255, 255, 255, 255},
 	send_port = 6969,
-}
-
-ChannelSampleData :: struct {
-	samples: []f32,
-}
-
-BatchSampleData :: struct {
-	batch_id: u64,
-	channel_data: []ChannelSampleData,
-}
-
-// protocol structs
-
-ChannelSpectrumData :: struct {
-	spectrum: []f32,
-}
-
-BatchSpectrumData :: struct {
-	batch_id: u64,
-	channel_data: []ChannelSpectrumData,
-}
-
-
-// simpler struct for c
-SpectrumPacketData :: struct {
-	packet_id: u64,
-	sample_rate: u32,
-	spectrum_data: BatchSpectrumData,
-	hello: u64,
-}
-
-data_callback :: proc "c" (pDevice : ^ma.device, pOutput : rawptr, pInput : rawptr, frameCount : u32) {
-	// In playback mode copy data to pOutput. In capture mode read data from pInput. In full-duplex mode, both
-	// pOutput and pInput will be valid and you can move data from pInput into pOutput. Never process more than
-	// frameCount frames.
-
-	frameCount := frameCount
-
-	context = runtime.default_context()
-	user_data : ^UserData = cast(^UserData)pDevice.pUserData
-	write_ptr : rawptr
-	result := ma.pcm_rb_acquire_write(&user_data.samples_buffer, &frameCount, &write_ptr)
-	assert(result == ma.result.SUCCESS)
-
-	write_ptr_typed := transmute([^]f32)write_ptr;
-	input_ptr_typed := transmute([^]f32)pInput;
-	
-	// @TODO: maybe use memcpy here?
-	for i in 0..< pDevice.capture.channels * frameCount {
-		write_ptr_typed[i] = input_ptr_typed[i]
-	}
-
-	result2 := ma.pcm_rb_commit_write(&user_data.samples_buffer, frameCount, write_ptr)
-	assert(result2 == ma.result.SUCCESS)
 }
 
 main :: proc() {
@@ -162,87 +108,113 @@ main :: proc() {
 
 	endpoint: net.Endpoint = {
 		address = cfg.send_address,
-		port = cfg.send_port
+		port = cfg.send_port,
 	}
 
 	// ugh the casts...
 	target_frame_time := time.Duration(cast(i64)(f32(int(time.Second) * cfg.batch_sample_count) / f32(cfg.sample_rate)))
 	log.infof("setting target frame time for sample_rate: %v, batch_sample_count: %v, target frame time: %v", cfg.sample_rate, cfg.batch_sample_count, target_frame_time)
 
-	tick_now: time.Tick = time.tick_now()
-	delta: time.Duration
+	when #defined(EMBEDDED_VISUALISE) == false {
+		tick_now: time.Tick = time.tick_now()
+		delta: time.Duration
+	
+		for {
+			delta = time.tick_since(tick_now)
+			tick_now = time.tick_now()
+	
+			// do all work
+			{
+				sample_data := get_sample_data(&cfg, &user_data)
+				spectrum_data := calculate_spectrum_data(&cfg, &sample_data)
 
-	for {
-		delta = time.tick_since(tick_now)
-		tick_now = time.tick_now()
+				packet_data := SpectrumPacketData{
+					packet_id = 69,
+					sample_rate = u32(cfg.sample_rate),
+					spectrum_data = spectrum_data,
+					hello = 42,
+				}
+	
+				// packet_data.spectrum_data.channel_data = slice.clone(spectrum_data.channel_data)
+				// for &cd, i in packet_data.spectrum_data.channel_data {
+				// 	cd.spectrum = slice.clone(spectrum_data.channel_data[i].spectrum)
+				// }
+	
+				data, err := json.marshal(packet_data, json.Marshal_Options{}, context.temp_allocator)
+				log.infof("marshallederr: %v len data: %v", err, len(data))
+				
+				// packet_data_back: SpectrumPacketData
+				// back_err := json.unmarshal(data, &packet_data_back, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+				// assert(back_err == nil, "yow 2")
+				// log.infof("unmarshalled: %v err: %v", packet_data_back, back_err)
+	
+				net.send_udp(socket.(net.UDP_Socket), data, endpoint)
+	
+				free_all(context.temp_allocator)
+			}
+	
+			// sleep for the remainder of time after some work is done
+			work_ticks := time.tick_diff(tick_now, time.tick_now())
+			assert(target_frame_time - work_ticks >= 0)
+			time.accurate_sleep(target_frame_time - work_ticks)
+		}
+		
+		when ODIN_OS == .Windows {
+			// im done with windows wanting me to give me accurate sleeps
+			windows.timeEndPeriod(1)
+		}
+	} else { // EMBEDDED_VISUALISE is true
+		rl.InitWindow(1280, 720, "pulse pallete")
+		rl.SetTargetFPS(i32(1.0 / time.duration_seconds(target_frame_time)))
 
-		// do all work
-		{
+		for !rl.WindowShouldClose() {
+			delta := rl.GetFrameTime()
+
 			sample_data := get_sample_data(&cfg, &user_data)
 			spectrum_data := calculate_spectrum_data(&cfg, &sample_data)
-			
-			// do a deep copy here
-			packet_data := SpectrumPacketData{
-				packet_id = 69,
-				sample_rate = u32(cfg.sample_rate),
-				spectrum_data = spectrum_data,
-				hello = 42,
+			// log.infof("%v", spectrum_data)
+
+			rl.ClearBackground({16, 16, 16, 255})
+			rl.BeginDrawing()
+
+			// @TODO
+			for _, i in spectrum_data.channel_data[0].spectrum {
+				value := spectrum_data.channel_data[0].spectrum[i]
+				rl.DrawRectangle(100 + i32(i * 10), 100, 7, i32(value) * 3, rl.RED)
 			}
 
-			// packet_data.spectrum_data.channel_data = slice.clone(spectrum_data.channel_data)
-			// for &cd, i in packet_data.spectrum_data.channel_data {
-			// 	cd.spectrum = slice.clone(spectrum_data.channel_data[i].spectrum)
-			// }
-
-			data, err := json.marshal(packet_data, json.Marshal_Options{}, context.temp_allocator)
-			log.infof("marshallederr: %v len data: %v", err, len(data))
-			
-			// packet_data_back: SpectrumPacketData
-			// back_err := json.unmarshal(data, &packet_data_back, json.DEFAULT_SPECIFICATION, context.temp_allocator)
-			// assert(back_err == nil, "yow 2")
-			// log.infof("unmarshalled: %v err: %v", packet_data_back, back_err)
-
-			net.send_udp(socket.(net.UDP_Socket), data, endpoint)
+			rl.EndDrawing()
 
 			free_all(context.temp_allocator)
 		}
 
-		// sleep for the remainder of time after some work is done
-		work_ticks := time.tick_diff(tick_now, time.tick_now())
-		assert(target_frame_time - work_ticks >= 0)
-		time.accurate_sleep(target_frame_time - work_ticks)
+		rl.CloseWindow()
 	}
+}
+
+data_callback :: proc "c" (pDevice : ^ma.device, pOutput : rawptr, pInput : rawptr, frameCount : u32) {
+	// In playback mode copy data to pOutput. In capture mode read data from pInput. In full-duplex mode, both
+	// pOutput and pInput will be valid and you can move data from pInput into pOutput. Never process more than
+	// frameCount frames.
+
+	frameCount := frameCount
+
+	context = runtime.default_context()
+	user_data : ^UserData = cast(^UserData)pDevice.pUserData
+	write_ptr : rawptr
+	result := ma.pcm_rb_acquire_write(&user_data.samples_buffer, &frameCount, &write_ptr)
+	assert(result == ma.result.SUCCESS)
+
+	write_ptr_typed := transmute([^]f32)write_ptr
+	input_ptr_typed := transmute([^]f32)pInput
 	
-	when ODIN_OS == .Windows {
-		// im done with windows wanting me to give me accurate sleeps
-		windows.timeEndPeriod(1)
+	// @TODO: maybe use memcpy here?
+	for i in 0..< pDevice.capture.channels * frameCount {
+		write_ptr_typed[i] = input_ptr_typed[i]
 	}
 
-	// rl.InitWindow(1280, 720, "pulse pallete")
-	// rl.SetTargetFPS(i32(target_frame_rate))
-
-	// for !rl.WindowShouldClose() {
-	// 	delta := rl.GetFrameTime()
-
-	// 	sample_data := get_sample_data(&cfg, &user_data)
-	// 	spectrum_data := calculate_spectrum_data(&cfg, &sample_data)
-	// 	// log.infof("%v", spectrum_data)
-
-	// 	rl.ClearBackground({16, 16, 16, 255})
-	// 	rl.BeginDrawing()
-
-	// 	// @TODO
-	// 	for _, i in spectrum_data.channel_data[0].spectrum {
-	// 		value := spectrum_data.channel_data[0].spectrum[i]
-	// 		rl.DrawRectangle(100 + i32(i * 10), 100, 7, i32(value) * 3, rl.RED)
-	// 	}
-
-	// 	rl.EndDrawing()
-
-	// 	free_all(context.temp_allocator)
-	// }
-
-    // rl.CloseWindow()
+	result2 := ma.pcm_rb_commit_write(&user_data.samples_buffer, frameCount, write_ptr)
+	assert(result2 == ma.result.SUCCESS)
 }
 
 get_sample_data :: proc(cfg: ^ServerConfig, user_data: ^UserData) -> BatchSampleData {
