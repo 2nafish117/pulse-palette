@@ -128,27 +128,26 @@ main :: proc() {
 				sample_data := get_sample_data(&cfg, &user_data)
 				spectrum_data := calculate_spectrum_data(&cfg, &sample_data)
 
-				packet_data := SpectrumPacketData{
-					packet_id = 69,
-					sample_rate = u32(cfg.sample_rate),
-					spectrum_data = spectrum_data,
-					hello = 42,
-				}
+				// packet_data := BatchSpectrumData{
+				// 	packet_id = 69,
+				// 	sample_rate = u32(cfg.sample_rate),
+				// 	spectrum_data = spectrum_data,
+				// }
 	
 				// packet_data.spectrum_data.channel_data = slice.clone(spectrum_data.channel_data)
 				// for &cd, i in packet_data.spectrum_data.channel_data {
 				// 	cd.spectrum = slice.clone(spectrum_data.channel_data[i].spectrum)
 				// }
 	
-				data, err := json.marshal(packet_data, json.Marshal_Options{}, context.temp_allocator)
-				log.infof("marshallederr: %v len data: %v", err, len(data))
+				// data, err := json.marshal(packet_data, json.Marshal_Options{}, context.temp_allocator)
+				// log.infof("marshallederr: %v len data: %v", err, len(data))
 				
 				// packet_data_back: SpectrumPacketData
 				// back_err := json.unmarshal(data, &packet_data_back, json.DEFAULT_SPECIFICATION, context.temp_allocator)
 				// assert(back_err == nil, "yow 2")
 				// log.infof("unmarshalled: %v err: %v", packet_data_back, back_err)
 	
-				net.send_udp(socket.(net.UDP_Socket), data, endpoint)
+				// net.send_udp(socket.(net.UDP_Socket), data, endpoint)
 	
 				free_all(context.temp_allocator)
 			}
