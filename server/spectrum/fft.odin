@@ -106,8 +106,20 @@ fft_recursive :: proc(data: []complex64, out: []complex64) {
     fft_internal(data, out, len(data), 1)
 }
 
-make_sine_wave :: proc(amp, freq, over_time: f32, num_samples: int, allocator := context.allocator) -> [dynamic]complex64 {
+make_sine_wave_complex64 :: proc(amp, freq, over_time: f32, num_samples: int, allocator := context.allocator) -> [dynamic]complex64 {
 	samples := make([dynamic]complex64, 0, num_samples, context.temp_allocator)
+	sample_period: f32 = over_time / f32(num_samples)
+
+	for time: f32 = 0.0; time < over_time; time += sample_period {
+		value := amp * math.sin(2 * math.PI * freq * time)
+		append(&samples, value)
+	}
+
+	return samples
+}
+
+make_sine_wave_f32 :: proc(amp, freq, over_time: f32, num_samples: int, allocator := context.allocator) -> [dynamic]f32 {
+	samples := make([dynamic]f32, 0, num_samples, context.temp_allocator)
 	sample_period: f32 = over_time / f32(num_samples)
 
 	for time: f32 = 0.0; time < over_time; time += sample_period {
@@ -144,7 +156,7 @@ test_fft :: proc(t: ^testing.T) {
 		over_time :: 1
 		num_samples :: 128
 
-		samples := make_sine_wave(amp, freq, over_time, num_samples, context.temp_allocator)
+		samples := make_sine_wave_complex64(amp, freq, over_time, num_samples, context.temp_allocator)
 		fft(samples[:])
 
 		sample_rate := f32(num_samples / over_time)
@@ -166,7 +178,7 @@ test_fft :: proc(t: ^testing.T) {
 		over_time :: 1
 		num_samples :: 128
 
-		samples := make_sine_wave(amp, freq, over_time, num_samples, context.temp_allocator)
+		samples := make_sine_wave_complex64(amp, freq, over_time, num_samples, context.temp_allocator)
 		fft(samples[:])
 
 		sample_rate := f32(num_samples / over_time)
@@ -188,7 +200,7 @@ test_fft :: proc(t: ^testing.T) {
 		over_time :: 5
 		num_samples :: 256
 
-		samples := make_sine_wave(amp, freq, over_time, num_samples, context.temp_allocator)
+		samples := make_sine_wave_complex64(amp, freq, over_time, num_samples, context.temp_allocator)
 		fft(samples[:])
 
 		sample_rate := f32(num_samples / over_time)
@@ -210,15 +222,15 @@ test_fft :: proc(t: ^testing.T) {
 		
 		amp1 :: 3
 		freq1 :: 22
-		samples1 := make_sine_wave(amp1, freq1, over_time, num_samples, context.temp_allocator)
+		samples1 := make_sine_wave_complex64(amp1, freq1, over_time, num_samples, context.temp_allocator)
 		
 		amp2 :: 2
 		freq2 :: 43
-		samples2 := make_sine_wave(amp2, freq2, over_time, num_samples, context.temp_allocator)
+		samples2 := make_sine_wave_complex64(amp2, freq2, over_time, num_samples, context.temp_allocator)
 
 		amp3 :: 6
 		freq3 :: 12
-		samples3 := make_sine_wave(amp3, freq3, over_time, num_samples, context.temp_allocator)
+		samples3 := make_sine_wave_complex64(amp3, freq3, over_time, num_samples, context.temp_allocator)
 
 		samples := make([dynamic]complex64, 0, num_samples, context.temp_allocator)
 

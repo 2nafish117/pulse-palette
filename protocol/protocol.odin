@@ -10,6 +10,7 @@ import "core:strconv"
 import "core:encoding/cbor"
 import "core:strings"
 import "core:log"
+import "core:mem"
 
 Packet :: struct {
 	header: Header,
@@ -27,7 +28,6 @@ Header :: struct {
 	packet_id: u64,
 	// @TODO: how to version?
 	packet_version: u32,
-	packet_body_size: u32,
 }
 
 // audio spectrum extension
@@ -75,7 +75,7 @@ make_packet :: proc() -> Packet {
 // @TODO: better error handling 	
 marshal :: proc(p: ^Packet, allocator := context.temp_allocator) -> (data: []byte, err: cbor.Marshal_Error) {
 	builder: strings.Builder
-	strings.builder_init(&builder)
+	strings.builder_init(&builder, allocator)
 
 	// header
 	cbor.marshal_into_builder(&builder, p.header) or_return
@@ -86,7 +86,7 @@ marshal :: proc(p: ^Packet, allocator := context.temp_allocator) -> (data: []byt
 		cbor.marshal_into_builder(&builder, p.sample_ext^) or_return
 	}
 
-	// specctrum extension
+	// spectrum extension
 	cbor.marshal_into_builder(&builder, b8(p.spectrum_ext != nil)) or_return
 	if p.spectrum_ext != nil {
 		cbor.marshal_into_builder(&builder, p.spectrum_ext^) or_return
@@ -101,10 +101,10 @@ marshal :: proc(p: ^Packet, allocator := context.temp_allocator) -> (data: []byt
 
 // @TODO: better error handling 
 unmarshal :: proc(data: []byte, p: ^Packet, allocator := context.temp_allocator) -> cbor.Unmarshal_Error {
-	buffer: bytes.Buffer
-	bytes.buffer_init(&buffer, data)
-	reader := io.to_reader(bytes.buffer_to_stream(&buffer))
+	r: bytes.Reader
+	bytes.reader_init(&r, data)
 
+	reader := io.to_reader(bytes.reader_to_stream(&r))
 	cbor.unmarshal_from_reader(reader, &p.header, cbor.Decoder_Flags{}, allocator) or_return
 
 	sample_ext_used: b8
@@ -122,7 +122,7 @@ unmarshal :: proc(data: []byte, p: ^Packet, allocator := context.temp_allocator)
 	}
 
 	crc: u32
-	cbor.unmarshal_from_reader(reader, &crc) or_return
+	cbor.unmarshal_from_reader(reader, &crc, cbor.Decoder_Flags{}, allocator) or_return
 
 	// @TODO: clean this up
 	if crc != hash.crc32(data[:len(data) - size_of(u32) - 1]) {
