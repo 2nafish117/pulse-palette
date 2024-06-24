@@ -1,23 +1,18 @@
 package main
 
 import "base:runtime"
-import "base:intrinsics"
 import "core:fmt"
-import "core:c"
 import "core:log"
 import "core:mem"
-import "core:math"
-import "core:math/cmplx"
 import "core:net"
 import "core:time"
 import "core:sys/windows"
-import "core:encoding/json"
-import "core:slice"
 
 import ma "vendor:miniaudio"
 import rl "vendor:raylib"
 
 import spm "spectrum"
+import ptl "soln:protocol"
 
 // see docs
 // https://raw.githubusercontent.com/mackron/miniaudio/master/miniaudio.h
@@ -33,6 +28,9 @@ ServerConfig :: struct {
 	device_type: ma.device_type,
 	send_address: net.IP4_Address,
 	send_port: int,
+
+	use_sample_ext: bool,
+	use_spectrum_ext: bool,
 }
 
 DEFAULT_SERVER_CONFIG :: ServerConfig{
@@ -40,8 +38,12 @@ DEFAULT_SERVER_CONFIG :: ServerConfig{
 	sample_rate = int(ma.standard_sample_rate.rate_44100),
 	batch_sample_count = 1024,
 	device_type = ma.device_type.loopback,
+	
 	send_address = net.IP4_Address{255, 255, 255, 255},
 	send_port = 6969,
+
+	use_sample_ext = false,
+	use_spectrum_ext = false,
 }
 
 main :: proc() {
@@ -104,7 +106,8 @@ main :: proc() {
 		net.close(socket)
 	}
 
-	net.set_option(socket, .Broadcast, true) //or_else panic("could not set socket to broadcast")
+	// @TODO: why doesnt this or_else work?
+	net.set_option(socket, .Broadcast, true)// or_else panic("could not set socket to broadcast")
 
 	endpoint: net.Endpoint = {
 		address = cfg.send_address,
@@ -128,27 +131,24 @@ main :: proc() {
 				sample_data := get_sample_data(&cfg, &user_data)
 				spectrum_data := calculate_spectrum_data(&cfg, &sample_data)
 
-				// packet_data := BatchSpectrumData{
-				// 	packet_id = 69,
-				// 	sample_rate = u32(cfg.sample_rate),
-				// 	spectrum_data = spectrum_data,
-				// }
+				packet := ptl.make_packet()
+
+				if cfg.use_sample_ext {
+					packet.sample_ext = new(ptl.AudioSampleExt, context.temp_allocator)
+					packet.sample_ext.sample_data = sample_data
+				}
+
+				if cfg.use_spectrum_ext {
+					packet.spectrum_ext = new(ptl.AudioSpectrumExt, context.temp_allocator)
+					packet.spectrum_ext.spectrum_data = spectrum_data
+				}
+			
+				data, err := ptl.marshal(&packet)
+				net.send_udp(socket.(net.UDP_Socket), data, endpoint)
 	
-				// packet_data.spectrum_data.channel_data = slice.clone(spectrum_data.channel_data)
-				// for &cd, i in packet_data.spectrum_data.channel_data {
-				// 	cd.spectrum = slice.clone(spectrum_data.channel_data[i].spectrum)
-				// }
-	
-				// data, err := json.marshal(packet_data, json.Marshal_Options{}, context.temp_allocator)
-				// log.infof("marshallederr: %v len data: %v", err, len(data))
-				
-				// packet_data_back: SpectrumPacketData
-				// back_err := json.unmarshal(data, &packet_data_back, json.DEFAULT_SPECIFICATION, context.temp_allocator)
-				// assert(back_err == nil, "yow 2")
-				// log.infof("unmarshalled: %v err: %v", packet_data_back, back_err)
-	
-				// net.send_udp(socket.(net.UDP_Socket), data, endpoint)
-	
+				other_packet: ptl.Packet
+				err2 := ptl.unmarshal(data, &other_packet)
+
 				free_all(context.temp_allocator)
 			}
 	
@@ -216,8 +216,8 @@ data_callback :: proc "c" (pDevice : ^ma.device, pOutput : rawptr, pInput : rawp
 	assert(result2 == ma.result.SUCCESS)
 }
 
-get_sample_data :: proc(cfg: ^ServerConfig, user_data: ^UserData) -> BatchSampleData {
-	sample_data: BatchSampleData
+get_sample_data :: proc(cfg: ^ServerConfig, user_data: ^UserData) -> ptl.BatchSampleData {
+	sample_data: ptl.BatchSampleData
 
 	@(static) batch_id: u64 = 0
 	buffer_out: rawptr
@@ -229,14 +229,14 @@ get_sample_data :: proc(cfg: ^ServerConfig, user_data: ^UserData) -> BatchSample
 		
 		// allocate mem for each channel
 		sample_data.batch_id = batch_id
-		sample_data.channel_data = make([]ChannelSampleData, cfg.channels, context.temp_allocator)
+		sample_data.channel_data = make([]ptl.ChannelSampleData, cfg.channels, context.temp_allocator)
 		for &channel in sample_data.channel_data {
 			channel.samples = make([]f32, cfg.batch_sample_count, context.temp_allocator)
 		}
 
 		buffer_out_typed := transmute([^]f32)buffer_out
 
-		log.infof("num_frames_per_batch: %v", num_frames_per_batch)
+		// log.infof("num_frames_per_batch: %v", num_frames_per_batch)
 
 		j: int = 0
 		// copy into each channel array
@@ -255,10 +255,10 @@ get_sample_data :: proc(cfg: ^ServerConfig, user_data: ^UserData) -> BatchSample
 	return sample_data
 }
 
-calculate_spectrum_data :: proc(cfg: ^ServerConfig, sample_data: ^BatchSampleData) -> BatchSpectrumData {
-	spectrum_data: BatchSpectrumData
+calculate_spectrum_data :: proc(cfg: ^ServerConfig, sample_data: ^ptl.BatchSampleData) -> ptl.BatchSpectrumData {
+	spectrum_data: ptl.BatchSpectrumData
 	spectrum_data.batch_id = sample_data.batch_id
-	spectrum_data.channel_data = make([]ChannelSpectrumData, cfg.channels, context.temp_allocator)
+	spectrum_data.channel_data = make([]ptl.ChannelSpectrumData, cfg.channels, context.temp_allocator)
 
 	for _, i in spectrum_data.channel_data {
 		channel_sample_data := sample_data.channel_data[i]
