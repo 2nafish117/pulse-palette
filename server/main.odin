@@ -1,23 +1,20 @@
 package main
 
 import "base:runtime"
-import "base:intrinsics"
 import "core:fmt"
-import "core:c"
 import "core:log"
 import "core:mem"
-import "core:math"
-import "core:math/cmplx"
 import "core:net"
 import "core:time"
 import "core:sys/windows"
-import "core:encoding/json"
-import "core:slice"
 
 import ma "vendor:miniaudio"
 import rl "vendor:raylib"
 
 import spm "spectrum"
+import ptl "soln:protocol"
+import "soln:thirdparty/back"
+import pdb "soln:thirdparty/back/vendor/pdb/pdb"
 
 // see docs
 // https://raw.githubusercontent.com/mackron/miniaudio/master/miniaudio.h
@@ -40,14 +37,32 @@ DEFAULT_SERVER_CONFIG :: ServerConfig{
 	sample_rate = int(ma.standard_sample_rate.rate_44100),
 	batch_sample_count = 1024,
 	device_type = ma.device_type.loopback,
+	
 	send_address = net.IP4_Address{255, 255, 255, 255},
 	send_port = 6969,
 }
 
 main :: proc() {
-	context.logger = log.create_console_logger()
-	defer log.destroy_console_logger(context.logger)
+	context.assertion_failure_proc = back.assertion_failure_proc
+	back.register_segfault_handler()
 
+	// set up tracking allocator
+	track: back.Tracking_Allocator
+	back.tracking_allocator_init(&track, context.allocator)
+	defer back.tracking_allocator_destroy(&track)
+	context.allocator = back.tracking_allocator(&track)
+	defer back.tracking_allocator_print_results(&track)
+	
+	// init logger
+	console_logger := log.create_console_logger()
+	context.logger = console_logger
+	defer log.destroy_console_logger(console_logger)
+
+
+	app_main()
+}
+
+app_main :: proc() {
 	cfg := DEFAULT_SERVER_CONFIG
 	// @TODO: cmd params
 	log.infof("using config %v", cfg)
@@ -59,7 +74,7 @@ main :: proc() {
 	backing_memory_size := 2 * cfg.batch_sample_count
 	backing_allocation : []f32 = make([]f32, backing_memory_size * cfg.channels)
 	log.infof("using %v kB for ring buffer",  len(backing_allocation) * size_of(f32) / mem.Kilobyte)
-	defer free(&backing_allocation)
+	defer delete(backing_allocation)
 	
 	user_data : UserData
 	log.info("initialising ring buffer")
@@ -104,7 +119,8 @@ main :: proc() {
 		net.close(socket)
 	}
 
-	net.set_option(socket, .Broadcast, true) //or_else panic("could not set socket to broadcast")
+	// @TODO: why doesnt this or_else work?
+	net.set_option(socket, .Broadcast, true)// or_else panic("could not set socket to broadcast")
 
 	endpoint: net.Endpoint = {
 		address = cfg.send_address,
@@ -115,7 +131,8 @@ main :: proc() {
 	target_frame_time := time.Duration(cast(i64)(f32(int(time.Second) * cfg.batch_sample_count) / f32(cfg.sample_rate)))
 	log.infof("setting target frame time for sample_rate: %v, batch_sample_count: %v, target frame time: %v", cfg.sample_rate, cfg.batch_sample_count, target_frame_time)
 
-	when #defined(EMBEDDED_VISUALISE) == false {
+	EMBEDDED_VISUALISE :: true
+	when !EMBEDDED_VISUALISE {
 		tick_now: time.Tick = time.tick_now()
 		delta: time.Duration
 	
@@ -126,29 +143,15 @@ main :: proc() {
 			// do all work
 			{
 				sample_data := get_sample_data(&cfg, &user_data)
-				spectrum_data := calculate_spectrum_data(&cfg, &sample_data)
+				spectrum_data := calculate_spectrum_data(&cfg, sample_data)
 
-				// packet_data := BatchSpectrumData{
-				// 	packet_id = 69,
-				// 	sample_rate = u32(cfg.sample_rate),
-				// 	spectrum_data = spectrum_data,
-				// }
+				packet := ptl.make_packet()
+				data, err := ptl.marshal(&packet)
+				net.send_udp(socket.(net.UDP_Socket), data, endpoint)
 	
-				// packet_data.spectrum_data.channel_data = slice.clone(spectrum_data.channel_data)
-				// for &cd, i in packet_data.spectrum_data.channel_data {
-				// 	cd.spectrum = slice.clone(spectrum_data.channel_data[i].spectrum)
-				// }
-	
-				// data, err := json.marshal(packet_data, json.Marshal_Options{}, context.temp_allocator)
-				// log.infof("marshallederr: %v len data: %v", err, len(data))
-				
-				// packet_data_back: SpectrumPacketData
-				// back_err := json.unmarshal(data, &packet_data_back, json.DEFAULT_SPECIFICATION, context.temp_allocator)
-				// assert(back_err == nil, "yow 2")
-				// log.infof("unmarshalled: %v err: %v", packet_data_back, back_err)
-	
-				// net.send_udp(socket.(net.UDP_Socket), data, endpoint)
-	
+				other_packet: ptl.Packet
+				err2 := ptl.unmarshal(data, &other_packet)
+
 				free_all(context.temp_allocator)
 			}
 	
@@ -170,17 +173,23 @@ main :: proc() {
 			delta := rl.GetFrameTime()
 
 			sample_data := get_sample_data(&cfg, &user_data)
-			spectrum_data := calculate_spectrum_data(&cfg, &sample_data)
+			spectrum_data := calculate_spectrum_data(&cfg, sample_data)
 			// log.infof("%v", spectrum_data)
+
+			packet := ptl.make_packet()
+		
+			data, err := ptl.marshal(&packet)
+
+			other_packet: ptl.Packet
+			err2 := ptl.unmarshal(data, &other_packet)
 
 			rl.ClearBackground({16, 16, 16, 255})
 			rl.BeginDrawing()
 
-			// @TODO
-			for _, i in spectrum_data.channel_data[0].spectrum {
-				value := spectrum_data.channel_data[0].spectrum[i]
-				rl.DrawRectangle(100 + i32(i * 10), 100, 7, i32(value) * 3, rl.RED)
-			}
+			audio_visualise(&cfg, packet.sample_data, packet.spectrum_data)
+			// sine_wave_visualise()
+
+			// sine_wave_visualise2(&cfg)
 
 			rl.EndDrawing()
 
@@ -216,9 +225,7 @@ data_callback :: proc "c" (pDevice : ^ma.device, pOutput : rawptr, pInput : rawp
 	assert(result2 == ma.result.SUCCESS)
 }
 
-get_sample_data :: proc(cfg: ^ServerConfig, user_data: ^UserData) -> BatchSampleData {
-	sample_data: BatchSampleData
-
+get_sample_data :: proc(cfg: ^ServerConfig, user_data: ^UserData) -> []f32 {
 	@(static) batch_id: u64 = 0
 	buffer_out: rawptr
 	num_frames_per_batch: u32 = u32(cfg.batch_sample_count)
@@ -226,44 +233,79 @@ get_sample_data :: proc(cfg: ^ServerConfig, user_data: ^UserData) -> BatchSample
 	result := ma.pcm_rb_acquire_read(&user_data.samples_buffer, &num_frames_per_batch, &buffer_out)
 
 	if result == ma.result.SUCCESS {
-		
-		// allocate mem for each channel
-		sample_data.batch_id = batch_id
-		sample_data.channel_data = make([]ChannelSampleData, cfg.channels, context.temp_allocator)
-		for &channel in sample_data.channel_data {
-			channel.samples = make([]f32, cfg.batch_sample_count, context.temp_allocator)
-		}
+		sample_data := make([]f32, cfg.batch_sample_count, context.temp_allocator)
 
 		buffer_out_typed := transmute([^]f32)buffer_out
 
-		log.infof("num_frames_per_batch: %v", num_frames_per_batch)
+		// log.infof("num_frames_per_batch: %v", num_frames_per_batch)
 
+		// @TODO: add all channel values or calculate the avg?
 		j: int = 0
-		// copy into each channel array
 		for i: int = 0; i < int(num_frames_per_batch); i += cfg.channels {
 			for c: int = 0; c < cfg.channels; c += 1 {
 				value := buffer_out_typed[i + c]
-				sample_data.channel_data[c].samples[j] = value
-				j += 1
+				sample_data[j] += value
 			}
+			// sample_data[j] = sample_data[j] / cfg.channels
+			j += 1
 		}
 		
 		batch_id += 1
 		result_commit_read := ma.pcm_rb_commit_read(&user_data.samples_buffer, num_frames_per_batch, &buffer_out)
+
+		return sample_data
 	}
 
-	return sample_data
+	return nil
 }
 
-calculate_spectrum_data :: proc(cfg: ^ServerConfig, sample_data: ^BatchSampleData) -> BatchSpectrumData {
-	spectrum_data: BatchSpectrumData
-	spectrum_data.batch_id = sample_data.batch_id
-	spectrum_data.channel_data = make([]ChannelSpectrumData, cfg.channels, context.temp_allocator)
+calculate_spectrum_data :: proc(cfg: ^ServerConfig, sample_data: []f32) -> []f32 {
+	return spm.analyse_spectrum(sample_data, context.temp_allocator)
+}
 
-	for _, i in spectrum_data.channel_data {
-		channel_sample_data := sample_data.channel_data[i]
-		spectrum_data.channel_data[i].spectrum = spm.analyse_spectrum(channel_sample_data.samples[:], context.temp_allocator)
+@(private="file")
+sine_wave_visualise :: proc() {
+	sample_data := spm.make_sine_wave_f32(1, 22, 5, 256, context.temp_allocator)
+
+	for _, i in sample_data {
+		value := sample_data[i]
+		rl.DrawRectangle(100 + i32(i * 4), 500, 4, 3 + i32(abs(value) * 50) , rl.RED)
 	}
 
-	return spectrum_data
+	spectrum_data := spm.analyse_spectrum(sample_data, context.temp_allocator)
+
+	for _, i in spectrum_data {
+		value := spectrum_data[i]
+		rl.DrawRectangle(100 + i32(i * 2), 600, 2, 3 + i32(value * 0.5) , rl.RED)
+	}
+}
+
+@(private="file")
+sine_wave_visualise2 :: proc(cfg: ^ServerConfig) {
+	sample_data := spm.make_sine_wave_f32(1, 22, 5, 256, context.temp_allocator)
+
+	for _, i in sample_data {
+		value := sample_data[i]
+		rl.DrawRectangle(100 + i32(i * 4), 100, 4, 3 + i32(abs(value) * 50) , rl.RED)
+	}
+
+	spectrum_data := calculate_spectrum_data(cfg, sample_data)
+
+	for _, i in spectrum_data {
+		value := spectrum_data[i]
+		rl.DrawRectangle(100 + i32(i * 1), i32(300), 1, 2 + i32(value * 2), rl.RED)
+	}
+}
+
+@(private="file")
+audio_visualise :: proc(cfg: ^ServerConfig, sample_data: []f32, spectrum_data: []f32) {
+	for _, i in sample_data {
+		value := sample_data[i]
+		rl.DrawRectangle(100 + i32(i * 1), 100, 1, i32(value * 100), rl.RED)
+	}
+
+	for _, i in spectrum_data {
+		value := spectrum_data[i]
+		rl.DrawRectangle(100 + i32(i * 1), 300, 1, i32(value * 2), rl.RED)
+	}
 }
