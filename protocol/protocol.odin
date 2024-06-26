@@ -3,7 +3,6 @@ package protocol
 import "core:hash"
 import "core:testing"
 import "core:io"
-import "core:bufio"
 import "core:bytes"
 import "core:fmt"
 import "core:strconv"
@@ -11,15 +10,22 @@ import "core:encoding/cbor"
 import "core:strings"
 import "core:log"
 import "core:mem"
+import "core:encoding/endian"
+import "core:net"
 
 Packet :: struct {
 	header: Header,
 
-	spectrum_ext: ^AudioSpectrumExt,
-	sample_ext: ^AudioSampleExt,
+	batch_id: u64,
+	sample_rate: int,
+	
+	sample_data: []f32,
+	spectrum_data: []f32,
 }
 
 PACKET_VERSION :: 69
+
+// @TODO: ensure a byte order, ensure network byte order (big endian)
 
 Header :: struct {
 	// continually increasing packet id
@@ -28,36 +34,6 @@ Header :: struct {
 	packet_id: u64,
 	// @TODO: how to version?
 	packet_version: u32,
-}
-
-// audio spectrum extension
-AudioSpectrumExt :: struct {
-	spectrum_data: BatchSpectrumData,
-}
-
-BatchSpectrumData :: struct {
-	batch_id: u64,
-	sample_rate: int,
-	channel_data: []ChannelSpectrumData,
-}
-
-ChannelSpectrumData :: struct {
-	spectrum: []f32,
-}
-
-// audio sample extension
-AudioSampleExt :: struct {
-	sample_data: BatchSampleData,
-}
-
-BatchSampleData :: struct {
-	batch_id: u64,
-	sample_rate: int,
-	channel_data: []ChannelSampleData,
-}
-
-ChannelSampleData :: struct {
-	samples: []f32,
 }
 
 make_packet :: proc() -> Packet {
@@ -72,62 +48,79 @@ make_packet :: proc() -> Packet {
 	}	
 }
 
+write_header :: proc(w: io.Writer, val: ^Header, n_written: ^int = nil) -> (n: int, err: io.Error) {
+	return io.write_ptr(w, val, size_of(Header), n_written)
+}
+
+read_header :: proc(r: io.Reader, val: ^Header, n_read: ^int = nil) -> (n: int, err: io.Error) {
+	return io.read_ptr(r, val, size_of(Header), n_read)
+}
+
 // @TODO: better error handling 	
 marshal :: proc(p: ^Packet, allocator := context.temp_allocator) -> (data: []byte, err: cbor.Marshal_Error) {
-	builder: strings.Builder
-	strings.builder_init(&builder, allocator)
+	buffer: bytes.Buffer
+	bytes.buffer_init_allocator(&buffer, 0, 1024, allocator)
 
-	// header
-	cbor.marshal_into_builder(&builder, p.header) or_return
-	
-	// sample extension
-	cbor.marshal_into_builder(&builder, b8(p.sample_ext != nil)) or_return
-	if p.sample_ext != nil {
-		cbor.marshal_into_builder(&builder, p.sample_ext^) or_return
-	}
+	writer := io.to_writer(bytes.buffer_to_stream(&buffer))
 
-	// spectrum extension
-	cbor.marshal_into_builder(&builder, b8(p.spectrum_ext != nil)) or_return
-	if p.spectrum_ext != nil {
-		cbor.marshal_into_builder(&builder, p.spectrum_ext^) or_return
-	}
+	_ = write_header(writer, &p.header) or_return
+
+	_ = io.write_u64(writer, p.batch_id) or_return
+	_ = io.write_u64(writer, cast(u64) p.sample_rate) or_return
+
+	_ = io.write_u64(writer, cast(u64) len(p.sample_data)) or_return
+	_ = io.write_ptr(writer, raw_data(p.sample_data), len(p.sample_data) * size_of(f32)) or_return
+
+	_ = io.write_u64(writer, cast(u64) len(p.spectrum_data)) or_return
+	_ = io.write_ptr(writer, raw_data(p.spectrum_data), len(p.spectrum_data) * size_of(f32)) or_return
 
 	// append crc
-	crc := hash.crc32(builder.buf[:])
-	cbor.marshal_into_builder(&builder, crc) or_return
+	crc := hash.crc32(buffer.buf[:])
+	_ = io.write_u64(writer, cast(u64) crc) or_return
 
-	return builder.buf[:], nil
+	return buffer.buf[:], nil
 }
 
 // @TODO: better error handling 
 unmarshal :: proc(data: []byte, p: ^Packet, allocator := context.temp_allocator) -> cbor.Unmarshal_Error {
-	r: bytes.Reader
-	bytes.reader_init(&r, data)
+	buffer: bytes.Reader
+	bytes.reader_init(&buffer, data)
 
-	reader := io.to_reader(bytes.reader_to_stream(&r))
-	cbor.unmarshal_from_reader(reader, &p.header, cbor.Decoder_Flags{}, allocator) or_return
+	reader := io.to_reader(bytes.reader_to_stream(&buffer))
+	
+	read_header(reader, &p.header)
 
-	sample_ext_used: b8
-	cbor.unmarshal_from_reader(reader, &sample_ext_used, cbor.Decoder_Flags{}, allocator) or_return
-	if sample_ext_used {
-		p.sample_ext = new(AudioSampleExt, allocator)
-		cbor.unmarshal_from_reader(reader, p.sample_ext, cbor.Decoder_Flags{}, allocator) or_return
+	io.read_ptr(reader, &p.batch_id, size_of(u64))
+	io.read_ptr(reader,  &p.sample_rate, size_of(u64))
+	
+	{
+		arr_len: u64
+		io.read_ptr(reader, &arr_len, size_of(u64)) or_return
+		p.sample_data = make([]f32, arr_len, allocator)
+		io.read_ptr(reader, raw_data(p.sample_data), len(p.sample_data) * size_of(f32)) or_return
 	}
 
-	spectrum_ext_used: b8
-	cbor.unmarshal_from_reader(reader, &spectrum_ext_used, cbor.Decoder_Flags{}, allocator) or_return
-	if spectrum_ext_used {
-		p.spectrum_ext = new(AudioSpectrumExt, allocator)
-		cbor.unmarshal_from_reader(reader, p.spectrum_ext, cbor.Decoder_Flags{}, allocator) or_return
+	{
+		arr_len: u64
+		io.read_ptr(reader, &arr_len, size_of(u64)) or_return
+		p.spectrum_data = make([]f32, arr_len, allocator)
+		io.read_ptr(reader, raw_data(p.spectrum_data), len(p.spectrum_data) * size_of(f32)) or_return
 	}
 
-	crc: u32
-	cbor.unmarshal_from_reader(reader, &crc, cbor.Decoder_Flags{}, allocator) or_return
+	// @TODO: is there a better way to get the slice to calculate with?
+	calculated_crc := hash.crc32(buffer.s[:len(buffer.s) - size_of(u64) - 1])
 
-	// @TODO: clean this up
-	if crc != hash.crc32(data[:len(data) - size_of(u32) - 1]) {
+	crc: u64
+	_ = io.read_ptr(reader, &crc, size_of(u64)) or_return
+	
+	if u32(crc) != calculated_crc {
 		log.error("crc check failed")
 	}
 
 	return nil
+}
+
+@(test)
+test_marshal_unmarsal :: proc(t: ^testing.T) {
+	// @TODO: write test	
 }
