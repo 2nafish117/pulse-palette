@@ -177,18 +177,24 @@ app_main :: proc() {
 			// log.infof("%v", spectrum_data)
 
 			packet := ptl.make_packet()
+			@(static) batch_id: u64 = 0
+			batch_id += 1
+			packet.batch_id = batch_id
+			packet.sample_rate = cfg.sample_rate
+			packet.sample_data = sample_data
+			packet.spectrum_data = spectrum_data
 		
-			data, err := ptl.marshal(&packet)
+			data, err := ptl.marshal(&packet, context.temp_allocator)
 
 			other_packet: ptl.Packet
-			err2 := ptl.unmarshal(data, &other_packet)
+			err2 := ptl.unmarshal(data, &other_packet, context.temp_allocator)
 
 			rl.ClearBackground({16, 16, 16, 255})
 			rl.BeginDrawing()
 
-			audio_visualise(&cfg, packet.sample_data, packet.spectrum_data)
+			audio_visualise(&cfg, other_packet.sample_data, other_packet.spectrum_data)
+			
 			// sine_wave_visualise()
-
 			// sine_wave_visualise2(&cfg)
 
 			rl.EndDrawing()
@@ -226,7 +232,7 @@ data_callback :: proc "c" (pDevice : ^ma.device, pOutput : rawptr, pInput : rawp
 }
 
 get_sample_data :: proc(cfg: ^ServerConfig, user_data: ^UserData) -> []f32 {
-	@(static) batch_id: u64 = 0
+	
 	buffer_out: rawptr
 	num_frames_per_batch: u32 = u32(cfg.batch_sample_count)
 
@@ -250,7 +256,6 @@ get_sample_data :: proc(cfg: ^ServerConfig, user_data: ^UserData) -> []f32 {
 			j += 1
 		}
 		
-		batch_id += 1
 		result_commit_read := ma.pcm_rb_commit_read(&user_data.samples_buffer, num_frames_per_batch, &buffer_out)
 
 		return sample_data

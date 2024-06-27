@@ -107,7 +107,7 @@ fft_recursive :: proc(data: []complex64, out: []complex64) {
 }
 
 make_sine_wave_complex64 :: proc(amp, freq, over_time: f32, num_samples: int, allocator := context.allocator) -> []complex64 {
-	samples := make([dynamic]complex64, 0, num_samples, context.temp_allocator)
+	samples := make([dynamic]complex64, 0, num_samples, allocator)
 	sample_period: f32 = over_time / f32(num_samples)
 
 	for time: f32 = 0.0; time < over_time; time += sample_period {
@@ -119,7 +119,7 @@ make_sine_wave_complex64 :: proc(amp, freq, over_time: f32, num_samples: int, al
 }
 
 make_sine_wave_f32 :: proc(amp, freq, over_time: f32, num_samples: int, allocator := context.allocator) -> []f32 {
-	samples := make([dynamic]f32, 0, num_samples, context.temp_allocator)
+	samples := make([dynamic]f32, 0, num_samples, allocator)
 	sample_period: f32 = over_time / f32(num_samples)
 
 	for time: f32 = 0.0; time < over_time; time += sample_period {
