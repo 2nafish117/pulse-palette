@@ -34,7 +34,7 @@ ServerConfig :: struct {
 
 DEFAULT_SERVER_CONFIG :: ServerConfig{
 	channels = 2,
-	sample_rate = int(ma.standard_sample_rate.rate_44100),
+	sample_rate = int(ma.standard_sample_rate.rate_8000),
 	batch_sample_count = 1024,
 	device_type = ma.device_type.loopback,
 	
@@ -57,7 +57,6 @@ main :: proc() {
 	console_logger := log.create_console_logger()
 	context.logger = console_logger
 	defer log.destroy_console_logger(console_logger)
-
 
 	app_main()
 }
@@ -131,7 +130,7 @@ app_main :: proc() {
 	target_frame_time := time.Duration(cast(i64)(f32(int(time.Second) * cfg.batch_sample_count) / f32(cfg.sample_rate)))
 	log.infof("setting target frame time for sample_rate: %v, batch_sample_count: %v, target frame time: %v", cfg.sample_rate, cfg.batch_sample_count, target_frame_time)
 
-	EMBEDDED_VISUALISE :: true
+	EMBEDDED_VISUALISE :: false
 	when !EMBEDDED_VISUALISE {
 		tick_now: time.Tick = time.tick_now()
 		delta: time.Duration
@@ -146,11 +145,12 @@ app_main :: proc() {
 				spectrum_data := calculate_spectrum_data(&cfg, sample_data)
 
 				packet := ptl.make_packet()
-				data, err := ptl.marshal(&packet)
+				data, err := ptl.marshal(&packet, context.temp_allocator)
 				net.send_udp(socket.(net.UDP_Socket), data, endpoint)
 	
-				other_packet: ptl.Packet
-				err2 := ptl.unmarshal(data, &other_packet)
+				// to test crc
+				// other_packet: ptl.Packet
+				// err2 := ptl.unmarshal(data, &other_packet, context.temp_allocator)
 
 				free_all(context.temp_allocator)
 			}
