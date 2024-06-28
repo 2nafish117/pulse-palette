@@ -30,6 +30,9 @@ ServerConfig :: struct {
 	device_type: ma.device_type,
 	send_address: net.IP4_Address,
 	send_port: int,
+
+	send_samples: bool,
+	send_spectrum: bool,
 }
 
 DEFAULT_SERVER_CONFIG :: ServerConfig{
@@ -40,6 +43,9 @@ DEFAULT_SERVER_CONFIG :: ServerConfig{
 	
 	send_address = net.IP4_Address{255, 255, 255, 255},
 	send_port = 6969,
+
+	send_samples = true,
+	send_spectrum = true,
 }
 
 main :: proc() {
@@ -145,9 +151,17 @@ app_main :: proc() {
 				spectrum_data := calculate_spectrum_data(&cfg, sample_data)
 
 				packet := ptl.make_packet()
+				@(static) batch_id: u64 = 0
+				batch_id += 1
+				packet.batch_id = batch_id
+				packet.sample_rate = u32(cfg.sample_rate)
+				packet.sample_data = sample_data if cfg.send_samples else nil
+				packet.spectrum_data = spectrum_data if cfg.send_spectrum else nil
+
 				data, err := ptl.marshal(&packet, context.temp_allocator)
 				net.send_udp(socket.(net.UDP_Socket), data, endpoint)
 	
+				// log.infof("%v", len(data))
 				// to test crc
 				// other_packet: ptl.Packet
 				// err2 := ptl.unmarshal(data, &other_packet, context.temp_allocator)
@@ -180,9 +194,9 @@ app_main :: proc() {
 			@(static) batch_id: u64 = 0
 			batch_id += 1
 			packet.batch_id = batch_id
-			packet.sample_rate = cfg.sample_rate
-			packet.sample_data = sample_data
-			packet.spectrum_data = spectrum_data
+			packet.sample_rate = u32(cfg.sample_rate)
+			packet.sample_data = sample_data if cfg.send_samples else nil
+			packet.spectrum_data = spectrum_data if cfg.send_spectrum else nil
 		
 			data, err := ptl.marshal(&packet, context.temp_allocator)
 
