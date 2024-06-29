@@ -37,7 +37,7 @@ ServerConfig :: struct {
 
 DEFAULT_SERVER_CONFIG :: ServerConfig{
 	channels = 2,
-	sample_rate = int(ma.standard_sample_rate.rate_8000),
+	sample_rate = int(ma.standard_sample_rate.rate_11025),
 	batch_sample_count = 1024,
 	device_type = ma.device_type.loopback,
 	

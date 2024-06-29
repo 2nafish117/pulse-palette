@@ -110,7 +110,7 @@ app_main :: proc() {
 
 		for _, i in packet.sample_data {
 			value := packet.sample_data[i]
-			rl.DrawRectangle(100 + i32(i * 1), 100, 1, i32(value * 30), rl.RED)
+			rl.DrawRectangle(100 + i32(i * 1), 100, 1, i32(value * 50), rl.RED)
 		}
 
 		for _, i in packet.spectrum_data {
