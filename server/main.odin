@@ -11,7 +11,7 @@ import "core:sys/windows"
 import ma "vendor:miniaudio"
 import rl "vendor:raylib"
 
-import spm "spectrum"
+import "dsp"
 import ptl "soln:protocol"
 import "soln:thirdparty/back"
 import pdb "soln:thirdparty/back/vendor/pdb/pdb"
@@ -279,19 +279,19 @@ get_sample_data :: proc(cfg: ^ServerConfig, user_data: ^UserData) -> []f32 {
 }
 
 calculate_spectrum_data :: proc(cfg: ^ServerConfig, sample_data: []f32) -> []f32 {
-	return spm.analyse_spectrum(sample_data, context.temp_allocator)
+	return dsp.analyse_spectrum(sample_data, context.temp_allocator)
 }
 
 @(private="file")
 sine_wave_visualise :: proc() {
-	sample_data := spm.make_sine_wave_f32(1, 22, 5, 256, context.temp_allocator)
+	sample_data := dsp.make_sine_wave_f32(1, 22, 5, 256, context.temp_allocator)
 
 	for _, i in sample_data {
 		value := sample_data[i]
 		rl.DrawRectangle(100 + i32(i * 4), 500, 4, 3 + i32(abs(value) * 50) , rl.RED)
 	}
 
-	spectrum_data := spm.analyse_spectrum(sample_data, context.temp_allocator)
+	spectrum_data := dsp.analyse_spectrum(sample_data, context.temp_allocator)
 
 	for _, i in spectrum_data {
 		value := spectrum_data[i]
@@ -301,7 +301,7 @@ sine_wave_visualise :: proc() {
 
 @(private="file")
 sine_wave_visualise2 :: proc(cfg: ^ServerConfig) {
-	sample_data := spm.make_sine_wave_f32(1, 22, 5, 256, context.temp_allocator)
+	sample_data := dsp.make_sine_wave_f32(1, 22, 5, 256, context.temp_allocator)
 
 	for _, i in sample_data {
 		value := sample_data[i]

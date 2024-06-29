@@ -10,8 +10,6 @@ import "core:net"
 import "core:math"
 import "core:testing"
 
-import "soln:server/spectrum"
-
 Packet :: struct {
 	header: Header,
 

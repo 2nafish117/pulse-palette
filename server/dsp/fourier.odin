@@ -1,4 +1,4 @@
-package spectrum
+package dsp
 
 import "base:intrinsics"
 import "core:fmt"
