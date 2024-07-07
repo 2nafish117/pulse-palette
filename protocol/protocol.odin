@@ -10,6 +10,8 @@ import "core:net"
 import "core:math"
 import "core:testing"
 
+PACKET_VERSION :: 69
+
 Packet :: struct {
 	header: Header,
 
@@ -19,8 +21,6 @@ Packet :: struct {
 	sample_data: []f32,
 	spectrum_data: []f32,
 }
-
-PACKET_VERSION :: 69
 
 // @TODO: ensure a byte order, ensure network byte order (big endian)
 
