@@ -49,8 +49,7 @@ fft :: proc(x: []complex64) {
 		b = (((b & 0xf0f0f0f0) >> 4) | ((b & 0x0f0f0f0f) << 4))
 		b = (((b & 0xff00ff00) >> 8) | ((b & 0x00ff00ff) << 8))
 		b = ((b >> 16) | (b << 16)) >> (32 - m)
-		if (b > a)
-		{
+		if (b > a) {
 			t: complex64 = x[a]
 			x[a] = x[b]
 			x[b] = t
