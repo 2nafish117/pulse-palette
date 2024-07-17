@@ -1,5 +1,6 @@
 package main
 
+import "base:runtime"
 import "core:log"
 import "core:net"
 import "core:time"
@@ -47,6 +48,8 @@ main :: proc() {
 
 ThreadData :: struct {
 	cfg: ClientConfig,
+	// allocator to use when unmarshalling into packet
+	allocator: runtime.Allocator,
 	packet: ^ptl.Packet,
 	packet_mut: sync.Mutex,
 }
@@ -59,6 +62,7 @@ recv_packet_work :: proc(data: rawptr) {
 	tdata := cast(^ThreadData) data
 	cfg := tdata.cfg
 	packet := tdata.packet
+	main_thread_allocator := tdata.allocator
 
 	socket := net.create_socket(.IP4, .UDP) or_else panic("failed to create udp socket")
 	defer {
@@ -70,9 +74,6 @@ recv_packet_work :: proc(data: rawptr) {
 	endpoint.address = net.IP4_Any
 	endpoint.port = 6969
 	net.bind(socket, endpoint)// or_else panic("unable to bind socket")
-
-	// we need to block
-	// net.set_blocking(socket, false)
 
 	recv_buffer_size := cfg.recv_buffer_size
 	for {
@@ -102,10 +103,10 @@ recv_packet_work :: proc(data: rawptr) {
 			continue
 		}
 	
-		// sync.lock(&tdata.packet_mut)
-		// @TODO: this cannot be temp allocator, allocator must come from main thread? probalby
-		unmarshal_err := ptl.unmarshal(buffer, packet, context.temp_allocator)
-		// sync.unlock(&tdata.packet_mut)
+		sync.lock(&tdata.packet_mut)
+		free_all(tdata.allocator)
+		unmarshal_err := ptl.unmarshal(buffer, packet, tdata.allocator)
+		sync.unlock(&tdata.packet_mut)
 
 		if unmarshal_err != nil {
 			log.infof("%v", unmarshal_err)
@@ -119,29 +120,35 @@ recv_packet_work :: proc(data: rawptr) {
 app_main :: proc() {
 	cfg := DEFAULT_CLIENT_CONFIG
 	
-
 	rl.InitWindow(WindowWidth, WindowHeight, "live reaction")
+	// rl.SetConfigFlags()
 	rl.SetTargetFPS(60)
+
+	packet_allocator: mem.Scratch_Allocator
+	if err := mem.scratch_allocator_init(&packet_allocator, 0, context.allocator); err != nil {
+		log.errorf("%v", err)
+	}
+	defer mem.scratch_allocator_destroy(&packet_allocator)
 
 	packet: ptl.Packet
 	tdata: ThreadData = ThreadData{
+		allocator = mem.scratch_allocator(&packet_allocator),
 		packet = &packet,
 		cfg = cfg,
 	}
 
 	recv_thread := thread.create_and_start_with_data(&tdata, recv_packet_work)
-	// defer  {
-	// 	thread.join(recv_thread)
-	// 	thread.destroy(recv_thread)
-	// }
 
 	for !rl.WindowShouldClose() {
 		rl.ClearBackground({25, 25, 25, 255})
 		rl.BeginDrawing()
 
 		{
-			// sync.lock(&tdata.packet_mut)
-			// defer sync.unlock(&tdata.packet_mut)
+			sync.lock(&tdata.packet_mut)
+			defer sync.unlock(&tdata.packet_mut)
+
+			// log.infof("sample data %v", len(packet.sample_data))
+			// log.infof("spectrum data %v", len(packet.spectrum_data))
 
 			// @TODO: interpolation
 			for _, i in packet.sample_data {
@@ -156,11 +163,12 @@ app_main :: proc() {
 		}
 
 		rl.EndDrawing()
+		
 		free_all(context.temp_allocator)
 	}
 
 	rl.CloseWindow()
 
-	// thread.terminate(recv_thread, 0)
-	// thread.destroy(recv_thread)
+	thread.terminate(recv_thread, 0)
+	thread.destroy(recv_thread)
 }

@@ -150,6 +150,9 @@ app_main :: proc() {
 				sample_data := get_sample_data(&cfg, &user_data)
 				spectrum_data := calculate_spectrum_data(&cfg, sample_data)
 
+				// log.infof("sample data %v", sample_data)
+				// log.infof("spectrum data %v", len(spectrum_data))
+
 				packet := ptl.make_packet()
 				@(static) batch_id: u64 = 0
 				batch_id += 1
@@ -248,7 +251,7 @@ data_callback :: proc "c" (pDevice : ^ma.device, pOutput : rawptr, pInput : rawp
 get_sample_data :: proc(cfg: ^ServerConfig, user_data: ^UserData) -> []f32 {
 	
 	buffer_out: rawptr
-	num_frames_per_batch: u32 = u32(cfg.batch_sample_count)
+	num_frames_per_batch: u32 = u32(cfg.batch_sample_count * cfg.channels)
 
 	result := ma.pcm_rb_acquire_read(&user_data.samples_buffer, &num_frames_per_batch, &buffer_out)
 
@@ -266,7 +269,7 @@ get_sample_data :: proc(cfg: ^ServerConfig, user_data: ^UserData) -> []f32 {
 				value := buffer_out_typed[i + c]
 				sample_data[j] += value
 			}
-			// sample_data[j] = sample_data[j] / cfg.channels
+			sample_data[j] = sample_data[j] / f32(cfg.channels)
 			j += 1
 		}
 		
